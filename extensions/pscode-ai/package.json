@@ -1,0 +1,240 @@
+{
+  "name": "pscode-ai",
+  "displayName": "PSCode AI",
+  "description": "Local-first AI agent built into PSCode: chat, inline edit and an agentic tool loop.",
+  "publisher": "pscode",
+  "version": "0.1.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "main": "./out/extension",
+  "icon": "resources/pscode-ai.png",
+  "categories": [
+    "Machine Learning",
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": false,
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
+  "scripts": {
+    "compile": "npx gulp compile-extension:pscode-ai",
+    "watch": "npx gulp watch-extension:pscode-ai"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pscode-ai",
+          "title": "PSCode AI",
+          "icon": "resources/sparkle.svg"
+        }
+      ]
+    },
+    "views": {
+      "pscode-ai": [
+        {
+          "id": "pscode.chatView",
+          "name": "Chat",
+          "type": "webview",
+          "icon": "resources/sparkle.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "pscode.chat.focus",
+        "title": "PSCode: Open AI Chat"
+      },
+      {
+        "command": "pscode.chat.new",
+        "title": "PSCode: New Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "pscode.chat.cancel",
+        "title": "PSCode: Stop Generating",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "pscode.inlineEdit",
+        "title": "PSCode: Edit Selection with AI"
+      },
+      {
+        "command": "pscode.explainSelection",
+        "title": "PSCode: Explain Selection"
+      },
+      {
+        "command": "pscode.addSelectionToChat",
+        "title": "PSCode: Add Selection to Chat"
+      },
+      {
+        "command": "pscode.pickModel",
+        "title": "PSCode: Select AI Model"
+      },
+      {
+        "command": "pscode.showLogs",
+        "title": "PSCode: Show AI Logs"
+      },
+      {
+        "command": "pscode.diff.accept",
+        "title": "PSCode: Accept AI Change",
+        "icon": "$(check)"
+      },
+      {
+        "command": "pscode.diff.discard",
+        "title": "PSCode: Discard AI Change",
+        "icon": "$(close)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "pscode.inlineEdit",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "pscode.chat.focus",
+        "key": "ctrl+l",
+        "mac": "cmd+l"
+      },
+      {
+        "command": "pscode.addSelectionToChat",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorHasSelection"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "pscode.inlineEdit",
+          "group": "pscode@1",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "pscode.explainSelection",
+          "group": "pscode@2",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "pscode.addSelectionToChat",
+          "group": "pscode@3",
+          "when": "editorHasSelection"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "pscode.chat.new",
+          "when": "view == pscode.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "pscode.pickModel",
+          "when": "view == pscode.chatView",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "pscode.diff.accept",
+          "when": "pscode.diffActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "pscode.diff.discard",
+          "when": "pscode.diffActive",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "PSCode AI",
+      "properties": {
+        "pscode.ai.provider": {
+          "type": "string",
+          "enum": [
+            "ollama",
+            "openai-compatible",
+            "anthropic"
+          ],
+          "default": "ollama",
+          "enumDescriptions": [
+            "Local Ollama server (default, fully offline)",
+            "Any OpenAI-compatible /v1/chat/completions endpoint (llama.cpp, LM Studio, vLLM, OpenAI, OpenRouter)",
+            "Anthropic Messages API"
+          ],
+          "description": "Which backend PSCode AI talks to."
+        },
+        "pscode.ai.endpoint": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434",
+          "description": "Base URL of the model server. Ollama defaults to http://127.0.0.1:11434; llama.cpp/LM Studio typically http://127.0.0.1:8080 or :1234."
+        },
+        "pscode.ai.model": {
+          "type": "string",
+          "default": "qwen2.5:7b",
+          "description": "Model identifier to use for chat, inline edit and the agent. Must be pulled already (see \"ollama list\"). Tool calling is required for Agent mode."
+        },
+        "pscode.ai.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "API key, only needed for hosted providers. Leave empty for local models. Prefer setting `PSCODE_API_KEY` in your environment instead of storing a key in settings."
+        },
+        "pscode.ai.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature. Lower is more deterministic, which suits code edits."
+        },
+        "pscode.ai.maxTokens": {
+          "type": "number",
+          "default": 4096,
+          "description": "Maximum tokens to generate per response."
+        },
+        "pscode.ai.requestTimeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "description": "Abort a request after this many milliseconds. CPU-only inference is slow, so this is deliberately generous."
+        },
+        "pscode.ai.contextBudgetChars": {
+          "type": "number",
+          "default": 24000,
+          "description": "Approximate character budget for file context sent to the model. Lower this if your model has a small context window."
+        },
+        "pscode.agent.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow Agent mode, where the model can call tools to read and edit files and run commands."
+        },
+        "pscode.agent.maxIterations": {
+          "type": "number",
+          "default": 12,
+          "description": "Maximum tool-call rounds before the agent loop stops."
+        },
+        "pscode.agent.approveShellCommands": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before the agent runs a terminal command. Turning this off lets the model run commands unattended."
+        },
+        "pscode.agent.approveFileWrites": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before the agent writes to a file."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "24.x"
+  }
+}
