@@ -1,9 +1,9 @@
 {
-  "name": "code-oss-dev",
-  "version": "1.136.0",
+  "name": "pscode",
+  "version": "0.1.0",
   "distro": "49ca65f8fe95b1a7f3253d817261df69638c258c",
   "author": {
-    "name": "Microsoft Corporation"
+    "name": "Pankaj Sharma"
   },
   "license": "MIT",
   "main": "./out/main.js",
@@ -286,7 +286,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/microsoft/vscode.git"
+    "url": "https://github.com/pankajsharma21/PSCode.git"
   },
   "bugs": {
     "url": "https://github.com/microsoft/vscode/issues"
@@ -324,5 +324,6 @@
     "husky": false,
     "@vscode/windows-ca-certs@0.3.4": true,
     "@vscode/windows-process-tree@0.8.0": true
-  }
+  },
+  "description": "PSCode - a VS Code based IDE with a built-in local-first AI agent"
 }
