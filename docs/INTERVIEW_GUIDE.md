@@ -215,11 +215,30 @@ actually damage a user's file.
 **Q: Why a fork instead of an extension?**
 
 For this project, because I wanted the product-level surface — own name, own icon, own installer,
-Copilot removed so the built-in chat doesn't nag for a GitHub sign-in, and a marketplace that
-works. An extension can't change any of that.
+own default settings, and a marketplace that works. An extension can't change any of that.
 
 The cost is real and worth naming: every upstream VS Code release has to be merged. I kept my
 footprint to eight upstream files specifically to keep those merges cheap.
+
+**Q: Tell me about something that broke and what you did about it.**
+
+I tried to strip Copilot out of the fork by deleting `defaultChatAgent` from `product.json`.
+It launched to a completely blank window.
+
+The first error was `welcomeOnboarding` doing `assertDefined(product.defaultChatAgent, ...)` at
+*module scope* — so it threw during workbench load and killed the render before anything painted.
+I made that one consistent with the rest of the file's neighbours, which all read the config with
+`?.` and a fallback. Still blank: next was
+`services/accounts/browser/defaultAccount.ts`, which takes the config as a non-optional
+`IDefaultChatAgent` and walks `provider.default.id`.
+
+At that point I grepped and found about 51 files reading it. So I stopped and reverted. Removing
+Copilot was cosmetic — the panel is unused, PSCode AI has its own view — and patching 51 call
+sites would have made every future upstream merge painful for no user-visible gain. Wrong trade.
+
+The lesson I'd actually claim from it: in a fork, the cost of a change isn't the diff, it's the
+diff *times every future rebase*. I keep my upstream footprint at eight files for exactly that
+reason, and I write the limitation down in the README rather than pretending the panel isn't there.
 
 **Q: Why no tab autocomplete? Cursor's headline feature.**
 
