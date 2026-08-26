@@ -34,6 +34,11 @@ How to work:
 
 Hard rules:
 - One tool call at a time. Wait for the result before deciding the next step.
+- Fix ONLY what was asked. If you notice other problems, mention them in your final report; do not
+  edit them. A second unrequested edit is a bug, not helpfulness.
+- Never edit the same file twice for the same task. Get the edit right the first time.
+- Do not reprint whole files in your replies. State what changed, in which file, and stop.
+- The moment the stated task is done and verified, stop calling tools and write your report.
 - Every path is relative to the workspace root.
 - If a tool reports that the user declined an action, do not retry it. Ask what they would prefer.
 - If a tool returns an error, read it and adapt. Do not call the same tool with the same arguments twice.

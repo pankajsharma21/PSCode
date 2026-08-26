@@ -192,6 +192,13 @@ model recover — a thrown exception would end the run instead.
 **A missing tool name lists the real ones.** When a model hallucinates `edit_file`, the result
 enumerates the seven tools that exist, which recovers the turn instead of wasting it.
 
+**Repetition is blocked in code, not just in the prompt.** Small models loop: they re-issue an
+identical tool call, or keep "improving" a file they already edited. Observed directly — one task
+produced three successive edits to the same file, the third of which corrupted a function
+signature. So the loop fingerprints every call as `name:args` and refuses an exact repeat, and caps
+mutating calls at two per file per task. Both refusals come back as tool *results*, not exceptions,
+because a message the model reads is the only thing that actually breaks the loop.
+
 **Cancellation is checked between every step** — before each iteration, during each stream, and
 before each tool call, so Stop actually stops rather than finishing the current tool first.
 

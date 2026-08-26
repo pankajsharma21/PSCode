@@ -61,6 +61,12 @@ export async function runAgent(options: AgentRunOptions): Promise<ChatMessage[]>
 
 	const maxIterations = Math.max(1, settings.agentMaxIterations);
 
+	// Small models loop: they re-issue an identical call, or keep "improving" a file they
+	// already edited. Prompt rules alone do not stop it, so the loop enforces both.
+	const seenCalls = new Set<string>();
+	const editsPerFile = new Map<string, number>();
+	const MAX_EDITS_PER_FILE = 2;
+
 	for (let iteration = 1; iteration <= maxIterations; iteration++) {
 		if (token.isCancellationRequested) {
 			events.onDone('cancelled');
@@ -115,7 +121,9 @@ export async function runAgent(options: AgentRunOptions): Promise<ChatMessage[]>
 			}
 
 			events.onToolStart(call);
-			const result = await executeTool(call, toolContext, token);
+
+			const repeatGuard = checkRepeat(call, seenCalls, editsPerFile, MAX_EDITS_PER_FILE);
+			const result = repeatGuard ?? await executeTool(call, toolContext, token);
 			events.onToolResult(call, result.ok, result.content);
 
 			const toolMessage: ChatMessage = {
@@ -173,4 +181,61 @@ async function executeTool(
 		log.error(`Tool ${call.name} threw`, error);
 		return { ok: false, content: describeToolError(error) };
 	}
+}
+
+
+/** Tool calls that mutate a file, for the per-file edit cap. */
+const MUTATING_TOOLS = new Set(['write_file', 'replace_in_file']);
+
+/**
+ * Refuses a tool call that repeats work already done in this run. Returned as a tool
+ * *result* rather than an exception so the model reads it and moves on, which is the only
+ * thing that actually breaks the loop.
+ */
+function checkRepeat(
+	call: ToolCall,
+	seenCalls: Set<string>,
+	editsPerFile: Map<string, number>,
+	maxEditsPerFile: number
+): { ok: boolean; content: string } | undefined {
+	const fingerprint = `${call.name}:${call.args}`;
+	if (seenCalls.has(fingerprint)) {
+		log.warn(`Blocked a repeated tool call: ${call.name}`);
+		return {
+			ok: false,
+			content: `You already called ${call.name} with exactly these arguments in this task, and the result has not changed. Do not repeat it. Either use what you already learned, or stop and report what you have done.`,
+		};
+	}
+	seenCalls.add(fingerprint);
+
+	if (!MUTATING_TOOLS.has(call.name)) {
+		return undefined;
+	}
+
+	let target: string | undefined;
+	try {
+		const parsed: unknown = JSON.parse(call.args || '{}');
+		if (parsed && typeof parsed === 'object') {
+			const value = (parsed as Record<string, unknown>)['path'];
+			if (typeof value === 'string') {
+				target = value;
+			}
+		}
+	} catch {
+		return undefined; // Malformed args are handled downstream.
+	}
+	if (!target) {
+		return undefined;
+	}
+
+	const count = (editsPerFile.get(target) ?? 0) + 1;
+	editsPerFile.set(target, count);
+	if (count > maxEditsPerFile) {
+		log.warn(`Blocked edit ${count} to ${target} in one task`);
+		return {
+			ok: false,
+			content: `You have already edited ${target} ${count - 1} time(s) for this task, which is the limit. Stop editing. If something is still wrong, say so in your report and let the user decide.`,
+		};
+	}
+	return undefined;
 }

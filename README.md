@@ -328,9 +328,11 @@ Stated plainly, because pretending otherwise wastes your time:
   8–20 tokens/sec. Chat and inline edit feel fine. Long agent runs require patience.
 - **No tab autocomplete.** Ghost-text completion needs sub-200 ms round trips, which CPU-only
   inference cannot deliver. Shipping a laggy version would be worse than not shipping it.
-- **Agent mode is only as good as the model.** 7B models lose track of multi-step plans and
-  sometimes emit malformed tool JSON. PSCode handles that (it tells the model to retry rather
-  than crashing) but cannot fix it.
+- **Agent mode is only as good as the model.** 7B models lose track of multi-step plans, emit
+  malformed tool JSON, and will keep "improving" a file after the task is done — one run made three
+  successive edits and corrupted a function signature. PSCode now blocks exact repeat calls and caps
+  edits at two per file per task, which stops the damage, but it cannot make a small model reason
+  better. They also sometimes *narrate* changes they did not make, so read the diff, not the prose.
 - **No conversation persistence.** Chats live in memory and die with the window.
 - **Linux is the only tested target.** The build config is cross-platform; I have only run it here.
 - **Only the Linux `.deb` path is exercised.** No signed macOS/Windows installers.
