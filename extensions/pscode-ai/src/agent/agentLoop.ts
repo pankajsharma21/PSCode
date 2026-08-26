@@ -10,6 +10,7 @@ import * as vscode from 'vscode';
 import { AISettings } from '../providers/registry';
 import { ChatMessage, LLMProvider, ToolCall } from '../providers/types';
 import { log } from '../util/logger';
+import { ApprovalHandler } from './approvals';
 import { AGENT_SYSTEM_PROMPT } from './prompts';
 import { ALL_TOOLS, describeToolError, toolByName, ToolContext } from './tools';
 
@@ -30,6 +31,8 @@ export interface AgentRunOptions {
 	events: AgentEvents;
 	token: vscode.CancellationToken;
 	signal: AbortSignal;
+	/** Renders Accept/Reject in the chat panel and resolves with the user's choice. */
+	requestApproval: ApprovalHandler;
 }
 
 /**
@@ -38,7 +41,7 @@ export interface AgentRunOptions {
  * into the conversation.
  */
 export async function runAgent(options: AgentRunOptions): Promise<ChatMessage[]> {
-	const { provider, settings, history, events, token, signal } = options;
+	const { provider, settings, history, events, token, signal, requestApproval } = options;
 
 	if (!provider.supportsTools) {
 		throw new Error(`${provider.label} does not support tool calling, so Agent mode is unavailable. Switch to Chat mode.`);
@@ -53,6 +56,7 @@ export async function runAgent(options: AgentRunOptions): Promise<ChatMessage[]>
 	const toolContext: ToolContext = {
 		settings,
 		report: line => events.onToolTrace(line),
+		requestApproval,
 	};
 
 	const maxIterations = Math.max(1, settings.agentMaxIterations);

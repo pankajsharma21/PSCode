@@ -180,6 +180,79 @@
 		scrollToBottom(true);
 	}
 
+	const APPROVAL_ICON = { edit: '\u270E', create: '\uFF0B', overwrite: '\u21BB', command: '\u25B6' };
+
+	/**
+	 * Renders an approval card. The buttons post the request id back; nothing else can
+	 * satisfy the gate, which is why this replaced the old modal dialog.
+	 */
+	function addApproval(request) {
+		hideEmptyState();
+		const card = document.createElement('div');
+		card.className = 'approval';
+		card.dataset.id = request.id;
+
+		const head = document.createElement('div');
+		head.className = 'approval-head';
+		const icon = document.createElement('span');
+		icon.className = 'approval-icon';
+		icon.textContent = APPROVAL_ICON[request.kind] || '?';
+		head.appendChild(icon);
+		const title = document.createElement('span');
+		title.className = request.kind === 'command' ? 'approval-title mono' : 'approval-title';
+		title.textContent = request.title;
+		head.appendChild(title);
+		card.appendChild(head);
+
+		if (request.detail) {
+			const detail = document.createElement('div');
+			detail.className = 'approval-detail';
+			detail.textContent = request.detail;
+			card.appendChild(detail);
+		}
+
+		const actions = document.createElement('div');
+		actions.className = 'approval-actions';
+
+		const accept = document.createElement('button');
+		accept.className = 'approve';
+		accept.textContent = 'Accept';
+		accept.dataset.approve = '1';
+		actions.appendChild(accept);
+
+		const reject = document.createElement('button');
+		reject.className = 'reject';
+		reject.textContent = 'Reject';
+		reject.dataset.approve = '0';
+		actions.appendChild(reject);
+
+		if (request.hasDiff) {
+			const reveal = document.createElement('button');
+			reveal.className = 'approval-link';
+			reveal.textContent = 'View diff';
+			reveal.dataset.reveal = '1';
+			actions.appendChild(reveal);
+		}
+
+		card.appendChild(actions);
+		transcript.appendChild(card);
+		scrollToBottom(true);
+		accept.focus();
+		return card;
+	}
+
+	function settleApproval(card, approved) {
+		const actions = card.querySelector('.approval-actions');
+		if (actions) {
+			actions.remove();
+		}
+		card.classList.add(approved ? 'accepted' : 'rejected');
+		const status = document.createElement('div');
+		status.className = 'approval-status';
+		status.textContent = approved ? 'Accepted' : 'Rejected';
+		card.appendChild(status);
+	}
+
 	function addTrace(text, failed) {
 		hideEmptyState();
 		const trace = document.createElement('div');
@@ -254,6 +327,23 @@
 
 	// Delegated so buttons inside streamed markdown work without rebinding on every frame.
 	transcript.addEventListener('click', event => {
+		// Approval buttons first: they gate real changes to the user's files.
+		const approvalButton = event.target.closest('.approval-actions button');
+		if (approvalButton) {
+			const card = approvalButton.closest('.approval');
+			if (!card) {
+				return;
+			}
+			if (approvalButton.dataset.reveal) {
+				vscode.postMessage({ type: 'revealDiff' });
+				return;
+			}
+			const approved = approvalButton.dataset.approve === '1';
+			vscode.postMessage({ type: 'approvalResponse', id: card.dataset.id, approved });
+			settleApproval(card, approved);
+			return;
+		}
+
 		const button = event.target.closest('.code-action');
 		if (!button) {
 			return;
@@ -337,6 +427,17 @@
 				trace.appendChild(document.createTextNode(' running…'));
 				break;
 			}
+
+			case 'approvalRequest':
+				// End any in-flight text bubble so the card is not appended inside it.
+				if (streamTarget) {
+					streamTarget.classList.remove('cursor');
+					streamTarget.innerHTML = renderMarkdown(streamRaw);
+					streamTarget = null;
+					streamRaw = '';
+				}
+				addApproval(message);
+				break;
 
 			case 'toolTrace':
 				addTrace(message.line, false);

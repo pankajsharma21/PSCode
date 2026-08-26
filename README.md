@@ -84,9 +84,25 @@ Switch the panel to **Agent** and the model gets seven tools:
 | `list_dir` | List a directory | path confined to workspace |
 | `search_text` | Find a literal string across the workspace | skips `node_modules`, `.git`, build output |
 | `get_diagnostics` | Read compiler/linter errors | — |
-| `replace_in_file` | Replace an exact snippet | must match exactly once; diff shown first |
-| `write_file` | Create or overwrite a file | modal approval, optional diff preview |
-| `run_command` | Run a shell command, return output | modal approval showing the exact command |
+| `replace_in_file` | Replace an exact snippet | must match exactly once; diff + Accept/Reject |
+| `write_file` | Create or overwrite a file | diff + Accept/Reject in the panel |
+| `run_command` | Run a shell command, return output | Accept/Reject showing the exact command |
+
+Nothing is written without your click. When the agent wants to change a file, PSCode opens a
+**side-by-side diff** beside your code and puts an **Accept / Reject** card in the chat panel:
+
+```
+┌─────────────────────────────────────┐
+│ ✎ Edit src/cart.ts                  │
+│ line 9                              │
+│ [ Accept ]  [ Reject ]     View diff│
+└─────────────────────────────────────┘
+```
+
+This deliberately replaced a modal dialog. A modal steals focus and — because it confirms on
+Enter — can be dismissed by a stray keypress. The card resolves only when the webview posts back
+the matching request id, which no keystroke can forge. Rejecting tells the model it was rejected,
+so it asks what to change instead of retrying the same edit.
 
 The loop is bounded by `pscode.agent.maxIterations` (default 12). When it hits that ceiling it
 **says so in the transcript** instead of stopping quietly — a silent stop is indistinguishable

@@ -332,3 +332,112 @@ footer {
 .actions button.ghost:hover { color: var(--vscode-foreground); }
 
 .actions button:disabled { opacity: 0.5; cursor: default; }
+
+/* ------------------------------------------------------------------- approvals */
+
+/*
+ * The approval card replaces what used to be a modal dialog. It sits in the transcript
+ * so the decision happens where the conversation is, and it is styled to read as a
+ * pending action rather than a message.
+ */
+.approval {
+	border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-panel-border));
+	border-left-width: 3px;
+	border-radius: 4px;
+	background: var(--vscode-inputValidation-warningBackground, var(--vscode-input-background));
+	padding: 8px 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.approval.accepted {
+	border-color: var(--vscode-charts-green);
+	background: var(--vscode-input-background);
+}
+
+.approval.rejected {
+	border-color: var(--vscode-errorForeground);
+	background: var(--vscode-input-background);
+	opacity: 0.75;
+}
+
+.approval-head {
+	display: flex;
+	align-items: baseline;
+	gap: 7px;
+}
+
+.approval-icon {
+	flex: 0 0 auto;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.approval-title {
+	font-size: 12px;
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+/* Shell commands are shown verbatim, so they must not be re-flowed or prettified. */
+.approval-title.mono {
+	font-family: var(--vscode-editor-font-family);
+	font-weight: 400;
+	font-size: 0.92em;
+}
+
+.approval-detail {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	overflow-wrap: anywhere;
+}
+
+.approval-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 2px;
+}
+
+.approval-actions button {
+	border: 0;
+	border-radius: 3px;
+	padding: 3px 12px;
+	font-family: inherit;
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.approval-actions button.approve {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.approval-actions button.approve:hover { background: var(--vscode-button-hoverBackground); }
+
+.approval-actions button.reject {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.approval-actions button.approval-link {
+	background: transparent;
+	color: var(--vscode-textLink-foreground);
+	margin-left: auto;
+	padding: 3px 4px;
+}
+
+.approval-actions button.approval-link:hover { background: var(--vscode-toolbar-hoverBackground); }
+
+.approval-actions button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+
+.approval-status {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--vscode-descriptionForeground);
+}

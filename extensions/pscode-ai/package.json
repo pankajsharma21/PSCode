@@ -232,6 +232,9 @@
           "description": "Ask for confirmation before the agent writes to a file."
         }
       }
+    },
+    "configurationDefaults": {
+      "workbench.secondarySideBar.defaultVisibility": "visibleInWorkspace"
     }
   },
   "devDependencies": {

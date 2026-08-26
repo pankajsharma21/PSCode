@@ -8,6 +8,7 @@
 
 import * as vscode from 'vscode';
 import { runAgent } from '../agent/agentLoop';
+import { ApprovalRegistry, ApprovalRequest } from '../agent/approvals';
 import { CHAT_SYSTEM_PROMPT } from '../agent/prompts';
 import { buildContext } from '../context/contextBuilder';
 import { reportProviderError } from '../inline/inlineEdit';
@@ -19,10 +20,14 @@ import { log } from '../util/logger';
 type Mode = 'chat' | 'agent';
 
 interface InboundMessage {
-	type: 'send' | 'cancel' | 'newChat' | 'apply' | 'copyDone' | 'pickModel' | 'openSettings' | 'ready';
+	type: 'send' | 'cancel' | 'newChat' | 'apply' | 'copyDone' | 'pickModel' | 'openSettings'
+	| 'ready' | 'approvalResponse' | 'revealDiff';
 	text?: string;
 	mode?: Mode;
 	code?: string;
+	/** approvalResponse */
+	id?: string;
+	approved?: boolean;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -31,6 +36,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	private view: vscode.WebviewView | undefined;
 	private conversation: ChatMessage[] = [];
 	private inflight: vscode.CancellationTokenSource | undefined;
+	private readonly approvals = new ApprovalRegistry();
 
 	constructor(private readonly extensionUri: vscode.Uri) { }
 
@@ -51,6 +57,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 		webviewView.onDidDispose(() => {
 			this.inflight?.cancel();
+			// A pending approval whose UI just disappeared must decline, not hang the agent.
+			this.approvals.declineAll();
 			this.view = undefined;
 		});
 	}
@@ -67,6 +75,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				break;
 			case 'cancel':
 				this.inflight?.cancel();
+				this.approvals.declineAll();
+				break;
+			case 'approvalResponse':
+				if (message.id) {
+					const known = this.approvals.resolve(message.id, message.approved === true);
+					log.info(`[approval] webview replied id=${message.id} approved=${message.approved === true} matched=${known}`);
+				}
+				break;
+			case 'revealDiff':
+				await vscode.commands.executeCommand('workbench.action.focusRightGroup');
 				break;
 			case 'newChat':
 				this.newChat();
@@ -94,6 +112,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 	cancel(): void {
 		this.inflight?.cancel();
+		this.approvals.declineAll();
+	}
+
+	/**
+	 * Posts an approval card into the transcript and waits for the click. Nothing else can
+	 * satisfy it: the webview must echo back this exact request id.
+	 */
+	private requestApproval(request: ApprovalRequest): Promise<boolean> {
+		if (!this.view) {
+			return Promise.resolve(false);
+		}
+		log.info(`[approval] requested id=${request.id} kind=${request.kind} title=${request.title}`);
+		const answer = this.approvals.create(request.id);
+		this.post({ type: 'approvalRequest', ...request });
+		return answer.then(approved => {
+			log.info(`[approval] settled id=${request.id} approved=${approved}`);
+			return approved;
+		});
 	}
 
 	focusInput(): void {
@@ -188,6 +224,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			abort.dispose();
 			source.dispose();
 			this.inflight = undefined;
+			if (this.approvals.size > 0) {
+				log.warn(`[approval] declining ${this.approvals.size} outstanding request(s) because the turn ended`);
+			}
+			this.approvals.declineAll();
 			this.post({ type: 'busy', busy: false });
 			this.post({ type: 'assistantDone' });
 		}
@@ -238,6 +278,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			history: this.conversation,
 			token: source.token,
 			signal,
+			requestApproval: request => this.requestApproval(request),
 			events: {
 				onText: delta => this.post({ type: 'assistantDelta', text: delta }),
 				onToolStart: call => this.post({ type: 'toolStart', name: call.name, args: call.args }),

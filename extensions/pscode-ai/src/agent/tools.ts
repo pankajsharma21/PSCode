@@ -13,6 +13,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { relativePath } from '../context/contextBuilder';
 import { PROPOSAL_SCHEME, setProposal } from '../inline/proposalDocuments';
+import { ApprovalHandler, nextApprovalId } from './approvals';
 import { AISettings } from '../providers/registry';
 import { ToolSchema } from '../providers/types';
 import { log } from '../util/logger';
@@ -24,6 +25,12 @@ export interface ToolContext {
 	settings: AISettings;
 	/** Streams a human-readable trace line into the chat transcript. */
 	report(line: string): void;
+	/**
+	 * Asks the user to approve a workspace-touching action. Rendered as Accept/Reject
+	 * buttons in the chat panel rather than a modal dialog, so it cannot be confirmed
+	 * by a stray keypress.
+	 */
+	requestApproval: ApprovalHandler;
 }
 
 export interface ToolResult {
@@ -220,25 +227,20 @@ const writeFile: AgentTool = {
 
 		const existed = await exists(uri);
 		if (context.settings.approveFileWrites) {
-			const verb = existed ? 'Overwrite' : 'Create';
-			const choice = await vscode.window.showWarningMessage(
-				`PSCode AI wants to ${verb.toLowerCase()} ${relativePath(uri)}`,
-				{ modal: true, detail: existed ? 'The current contents will be replaced.' : 'A new file will be created.' },
-				verb,
-				'Show diff first'
-			);
-			if (choice === 'Show diff first') {
-				await showProposedDiff(uri, content, existed);
-				const confirm = await vscode.window.showWarningMessage(
-					`Apply the change to ${relativePath(uri)}?`,
-					{ modal: true },
-					'Apply'
-				);
-				if (confirm !== 'Apply') {
-					return { ok: false, content: 'The user declined this write. Do not retry it; ask what to do differently.' };
-				}
-			} else if (choice !== verb) {
-				return { ok: false, content: 'The user declined this write. Do not retry it; ask what to do differently.' };
+			// Always show the diff, then ask. Reviewing before deciding is the point.
+			await showProposedDiff(uri, content, existed);
+			const approved = await context.requestApproval({
+				id: nextApprovalId(),
+				kind: existed ? 'overwrite' : 'create',
+				title: `${existed ? 'Overwrite' : 'Create'} ${relativePath(uri)}`,
+				detail: existed
+					? `Replaces all ${(await lineCount(uri))} lines with ${content.split('\n').length}`
+					: `${content.split('\n').length} lines`,
+				filePath: relativePath(uri),
+				hasDiff: true,
+			});
+			if (!approved) {
+				return { ok: false, content: 'The user rejected this write. Do not retry it; ask what to do differently.' };
 			}
 		}
 
@@ -291,13 +293,17 @@ const replaceInFile: AgentTool = {
 
 		if (context.settings.approveFileWrites) {
 			await showProposedDiff(uri, updated, true);
-			const confirm = await vscode.window.showWarningMessage(
-				`Apply PSCode AI's change to ${relativePath(uri)}?`,
-				{ modal: true, detail: 'The proposed result is open in a diff view.' },
-				'Apply'
-			);
-			if (confirm !== 'Apply') {
-				return { ok: false, content: 'The user declined this edit. Ask what to change before trying again.' };
+			const line = document.positionAt(first).line + 1;
+			const approved = await context.requestApproval({
+				id: nextApprovalId(),
+				kind: 'edit',
+				title: `Edit ${relativePath(uri)}`,
+				detail: `line ${line}`,
+				filePath: relativePath(uri),
+				hasDiff: true,
+			});
+			if (!approved) {
+				return { ok: false, content: 'The user rejected this edit. Ask what to change before trying again.' };
 			}
 		}
 
@@ -376,13 +382,14 @@ const runCommand: AgentTool = {
 
 		if (context.settings.approveShellCommands) {
 			const reason = typeof args['reason'] === 'string' ? args['reason'] : undefined;
-			const choice = await vscode.window.showWarningMessage(
-				`PSCode AI wants to run a command`,
-				{ modal: true, detail: `${command}\n\nWorking directory: ${cwd}${reason ? `\n\nWhy: ${reason}` : ''}` },
-				'Run'
-			);
-			if (choice !== 'Run') {
-				return { ok: false, content: 'The user declined to run that command. Continue without it or suggest an alternative.' };
+			const approved = await context.requestApproval({
+				id: nextApprovalId(),
+				kind: 'command',
+				title: command,
+				detail: reason ? `${reason} — in ${cwd}` : `in ${cwd}`,
+			});
+			if (!approved) {
+				return { ok: false, content: 'The user rejected that command. Continue without it or suggest an alternative.' };
 			}
 		}
 
@@ -401,6 +408,14 @@ const runCommand: AgentTool = {
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
+
+async function lineCount(uri: vscode.Uri): Promise<number> {
+	try {
+		return (await vscode.workspace.openTextDocument(uri)).lineCount;
+	} catch {
+		return 0;
+	}
+}
 
 async function exists(uri: vscode.Uri): Promise<boolean> {
 	try {
@@ -442,7 +457,8 @@ async function showProposedDiff(uri: vscode.Uri, proposed: string, existed: bool
 		existed ? uri : vscode.Uri.parse(`${PROPOSAL_SCHEME}:/empty?blank`),
 		proposalUri,
 		`PSCode AI proposal: ${path.basename(uri.fsPath)}`,
-		{ preview: true }
+		// preserveFocus keeps the caret in the chat panel, so Accept/Reject stays one click away.
+		{ preview: true, preserveFocus: true, viewColumn: vscode.ViewColumn.Beside }
 	);
 }
 

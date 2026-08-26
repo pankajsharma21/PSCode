@@ -210,10 +210,15 @@ so `a/../../b` and symlink-shaped inputs collapse before the comparison rather t
 
 On top of that:
 
-- `write_file` and `replace_in_file` require modal approval by default, with an optional
-  diff preview before committing.
-- `run_command` shows the exact command and working directory, and the model is asked to supply
-  a one-line reason that is displayed in the prompt.
+- `write_file` and `replace_in_file` open a side-by-side diff and then wait on an
+  **Accept / Reject card rendered in the chat panel**. This replaced a modal dialog for two
+  reasons: a modal steals focus, and a modal is confirmed by Enter, so a stray keypress can
+  approve a file write. The card resolves only when the webview echoes back the matching
+  request id (`ApprovalRegistry` in `agent/approvals.ts`), which a keystroke cannot forge.
+  Outstanding approvals are declined — never left pending — when the turn ends, the user
+  presses Stop, or the panel is disposed, because an unresolved promise would hang the loop.
+- `run_command` shows the exact command and working directory in the same card, and the model
+  is asked to supply a one-line reason that is displayed with it.
 - `replace_in_file` refuses a `find` string that matches zero or more than one time, so an
   ambiguous edit becomes a retry rather than a wrong edit in the wrong place.
 - Tool output is clipped to 20 000 characters with a visible marker, so one `cat` of a huge file
