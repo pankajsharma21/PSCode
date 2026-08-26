@@ -159,12 +159,13 @@ const listDir: AgentTool = {
 const searchText: AgentTool = {
 	schema: {
 		name: 'search_text',
-		description: 'Search the workspace for a literal string and return matching file paths with line numbers. Use this to locate code instead of guessing file names.',
+		description: 'Search the workspace for text and return matching file paths with line numbers. Prefer find_symbol or find_usages for code symbols; use this for strings, comments, config values, or languages with no language server.',
 		parameters: {
 			type: 'object',
 			properties: {
-				query: { type: 'string', description: 'Literal text to find.' },
+				query: { type: 'string', description: 'Text to find.' },
 				include: { type: 'string', description: 'Optional glob to limit the search, e.g. "**/*.ts".' },
+				regex: { type: 'boolean', description: 'Treat "query" as a JavaScript regular expression. Default false.' },
 			},
 			required: ['query'],
 		},
@@ -175,6 +176,25 @@ const searchText: AgentTool = {
 			throw new ToolError('A non-empty "query" is required.');
 		}
 		const include = typeof args['include'] === 'string' && args['include'] ? args['include'] : '**/*';
+
+		let pattern: RegExp | undefined;
+		if (args['regex'] === true) {
+			try {
+				pattern = new RegExp(query, 'g');
+			} catch (error) {
+				return {
+					ok: false,
+					content: `"${query}" is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`,
+				};
+			}
+		}
+		const matches = (line: string): boolean => {
+			if (!pattern) {
+				return line.includes(query);
+			}
+			pattern.lastIndex = 0;
+			return pattern.test(line);
+		};
 
 		const files = await vscode.workspace.findFiles(include, '**/{node_modules,.git,out,dist,build}/**', 400);
 		const hits: string[] = [];
@@ -189,12 +209,12 @@ const searchText: AgentTool = {
 			} catch {
 				continue; // Binary or unreadable - skip silently.
 			}
-			if (!text.includes(query)) {
+			const lines = text.split('\n');
+			if (!lines.some(matches)) {
 				continue;
 			}
-			const lines = text.split('\n');
 			for (let i = 0; i < lines.length && hits.length < 100; i++) {
-				if (lines[i].includes(query)) {
+				if (matches(lines[i])) {
 					hits.push(`${relativePath(file)}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
 				}
 			}
@@ -202,6 +222,170 @@ const searchText: AgentTool = {
 
 		context.report(`Searched for "${query}" - ${hits.length} match(es)`);
 		return { ok: true, content: hits.length ? clip(hits.join('\n')) : `No matches for "${query}".` };
+	},
+};
+
+/* -------------------------------------------------------------------------- */
+/* Project-wide navigation                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * These three tools are what make the agent work on a project rather than a file.
+ * They deliberately go through the language server (workspace symbols, references,
+ * definitions) rather than text matching: an embedding index guesses at relevance,
+ * whereas the language server *knows* what a symbol resolves to. It also costs nothing
+ * to maintain, because the editor already built it.
+ */
+
+const projectMap: AgentTool = {
+	schema: {
+		name: 'project_map',
+		description: 'Get an overview of the project: source files grouped by directory. Call this first when you do not know the layout.',
+		parameters: {
+			type: 'object',
+			properties: {
+				include: { type: 'string', description: 'Optional glob, e.g. "**/*.ts". Defaults to common source types.' },
+			},
+		},
+	},
+	async execute(args, context) {
+		const include = typeof args['include'] === 'string' && args['include']
+			? args['include']
+			: '**/*.{ts,tsx,js,jsx,mjs,cjs,py,java,go,rs,rb,php,cs,cpp,c,h,hpp,kt,swift,scala,json,yaml,yml,md}';
+
+		const files = await vscode.workspace.findFiles(include, '**/{node_modules,.git,out,dist,build,target,vendor,.venv,__pycache__}/**', 1200);
+
+		const byDir = new Map<string, string[]>();
+		for (const file of files) {
+			const rel = relativePath(file);
+			const slash = rel.lastIndexOf('/');
+			const dir = slash === -1 ? '.' : rel.slice(0, slash);
+			const name = slash === -1 ? rel : rel.slice(slash + 1);
+			const bucket = byDir.get(dir);
+			if (bucket) {
+				bucket.push(name);
+			} else {
+				byDir.set(dir, [name]);
+			}
+		}
+
+		const lines: string[] = [`${files.length} file(s) in ${byDir.size} directory/ies`];
+		for (const dir of [...byDir.keys()].sort()) {
+			const names = (byDir.get(dir) ?? []).sort();
+			lines.push(`${dir}/`);
+			// Cap per directory so one generated folder cannot swamp the context.
+			for (const name of names.slice(0, 40)) {
+				lines.push(`  ${name}`);
+			}
+			if (names.length > 40) {
+				lines.push(`  ...and ${names.length - 40} more`);
+			}
+		}
+
+		context.report(`Mapped the project (${files.length} files)`);
+		return { ok: true, content: clip(lines.join('\n')) };
+	},
+};
+
+const findSymbol: AgentTool = {
+	schema: {
+		name: 'find_symbol',
+		description: 'Find where a class, function, interface or variable is DEFINED anywhere in the project, by name. Uses the language server, so it understands the language rather than matching text.',
+		parameters: {
+			type: 'object',
+			properties: {
+				name: { type: 'string', description: 'Symbol name, or part of it, e.g. "totalPrice".' },
+			},
+			required: ['name'],
+		},
+	},
+	async execute(args, context) {
+		const name = args['name'];
+		if (typeof name !== 'string' || !name.trim()) {
+			throw new ToolError('A non-empty "name" is required.');
+		}
+
+		const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+			'vscode.executeWorkspaceSymbolProvider',
+			name.trim()
+		);
+
+		const found = (symbols ?? []).slice(0, 60).map(symbol => {
+			const kind = vscode.SymbolKind[symbol.kind] ?? 'Symbol';
+			return `${kind} ${symbol.name} — ${relativePath(symbol.location.uri)}:${symbol.location.range.start.line + 1}`;
+		});
+
+		context.report(`Looked up symbol "${name}" — ${found.length} definition(s)`);
+		if (found.length === 0) {
+			return {
+				ok: false,
+				content: `No symbol named "${name}" was found by the language server. It may be spelled differently, or the language may have no language server installed — fall back to search_text.`,
+			};
+		}
+		return { ok: true, content: found.join('\n') };
+	},
+};
+
+const findUsages: AgentTool = {
+	schema: {
+		name: 'find_usages',
+		description: 'Find EVERY place a symbol is used across the whole project, resolved by the language server. Use this before changing anything shared, so you know what you are about to break.',
+		parameters: {
+			type: 'object',
+			properties: {
+				name: { type: 'string', description: 'Symbol name, e.g. "discountFor".' },
+			},
+			required: ['name'],
+		},
+	},
+	async execute(args, context) {
+		const name = args['name'];
+		if (typeof name !== 'string' || !name.trim()) {
+			throw new ToolError('A non-empty "name" is required.');
+		}
+
+		// Locate the definition first: references are resolved from a position, not a string.
+		const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+			'vscode.executeWorkspaceSymbolProvider',
+			name.trim()
+		);
+		const exact = (symbols ?? []).find(s => s.name === name.trim()) ?? (symbols ?? [])[0];
+		if (!exact) {
+			return {
+				ok: false,
+				content: `Could not locate a definition for "${name}", so references cannot be resolved. Try find_symbol, or search_text for a textual match.`,
+			};
+		}
+
+		const locations = await vscode.commands.executeCommand<vscode.Location[]>(
+			'vscode.executeReferenceProvider',
+			exact.location.uri,
+			exact.location.range.start
+		);
+
+		const byFile = new Map<string, number[]>();
+		for (const location of locations ?? []) {
+			const rel = relativePath(location.uri);
+			const line = location.range.start.line + 1;
+			const bucket = byFile.get(rel);
+			if (bucket) {
+				bucket.push(line);
+			} else {
+				byFile.set(rel, [line]);
+			}
+		}
+
+		const lines: string[] = [
+			`"${name}" is defined at ${relativePath(exact.location.uri)}:${exact.location.range.start.line + 1}`,
+			`used in ${byFile.size} file(s), ${(locations ?? []).length} reference(s):`,
+		];
+		for (const file of [...byFile.keys()].sort()) {
+			const at = (byFile.get(file) ?? []).sort((a, b) => a - b);
+			lines.push(`  ${file} — line(s) ${at.join(', ')}`);
+		}
+
+		context.report(`Found ${(locations ?? []).length} usage(s) of "${name}" in ${byFile.size} file(s)`);
+		return { ok: true, content: clip(lines.join('\n')) };
 	},
 };
 
@@ -463,6 +647,9 @@ async function showProposedDiff(uri: vscode.Uri, proposed: string, existed: bool
 }
 
 export const ALL_TOOLS: AgentTool[] = [
+	projectMap,
+	findSymbol,
+	findUsages,
 	readFile,
 	listDir,
 	searchText,

@@ -202,6 +202,26 @@ because a message the model reads is the only thing that actually breaks the loo
 **Cancellation is checked between every step** — before each iteration, during each stream, and
 before each tool call, so Stop actually stops rather than finishing the current tool first.
 
+### Working across a project, not a file
+
+Chat context is deliberately narrow: the active file, the selection, its diagnostics, plus the
+*names* of other open tabs. Agent mode is where project scope comes from, through three tools that
+go via the language server rather than text matching:
+
+| Tool | Backed by |
+|---|---|
+| `find_symbol` | `vscode.executeWorkspaceSymbolProvider` |
+| `find_usages` | `executeWorkspaceSymbolProvider` to locate the definition, then `executeReferenceProvider` |
+| `project_map` | `workspace.findFiles`, grouped by directory, capped at 40 entries per directory |
+
+Choosing the language server over an embedding index was deliberate. An index has to be built,
+stored and invalidated on every edit, and vector similarity only ever *guesses* that two pieces of
+code are related. The language server already exists in the editor and actually knows what a symbol
+resolves to, so `find_usages` returns the real reference set — the thing you need before changing
+anything shared. The honest cost is that it cannot answer a conceptual question like "where do we
+handle discounts?" unless you name the symbol; `search_text` (with optional regex) is the fallback,
+and a real embedding index is the thing that would close that gap.
+
 ### Tool security
 
 `src/agent/tools.ts` holds the security boundary, and `resolveInWorkspace()` is the whole of it:

@@ -80,13 +80,31 @@ Switch the panel to **Agent** and the model gets seven tools:
 
 | Tool | What it does | Guard |
 |---|---|---|
+| `project_map` | Source files grouped by directory — the layout at a glance | skips `node_modules`, build output, vendor |
+| `find_symbol` | Where a class/function/variable is **defined**, anywhere in the project | language-server resolved |
+| `find_usages` | **Every** place a symbol is used, across every file | language-server resolved |
 | `read_file` | Read a file, optionally a line range | path confined to workspace |
 | `list_dir` | List a directory | path confined to workspace |
-| `search_text` | Find a literal string across the workspace | skips `node_modules`, `.git`, build output |
+| `search_text` | Find text (optionally regex) across the workspace | skips `node_modules`, `.git`, build output |
 | `get_diagnostics` | Read compiler/linter errors | — |
 | `replace_in_file` | Replace an exact snippet | must match exactly once; diff + Accept/Reject |
 | `write_file` | Create or overwrite a file | diff + Accept/Reject in the panel |
 | `run_command` | Run a shell command, return output | Accept/Reject showing the exact command |
+
+**It works on the whole project, not one file.** `find_usages` goes through the language server, so
+asking "what breaks if I change this?" gets an answer that is *resolved*, not guessed:
+
+```
+find_usages("discountFor")
+  → "discountFor" is defined at src/discounts.ts:7
+  → 5 references in 3 files:
+      src/checkout.ts — line 9
+      src/discounts.ts — line 7
+      src/report.ts — line 4
+```
+
+The agent prompt tells it to do this discovery for every affected file *before* editing any of them,
+so it does not edit a file and then find a caller it had not read.
 
 Nothing is written without your click. When the agent wants to change a file, PSCode opens a
 **side-by-side diff** beside your code and puts an **Accept / Reject** card in the chat panel:
