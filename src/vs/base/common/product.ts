@@ -270,6 +270,12 @@ export interface IProductConfiguration {
 	readonly aiGeneratedWorkspaceTrust?: IAiGeneratedWorkspaceTrust;
 
 	readonly defaultChatAgent: IDefaultChatAgent;
+	/**
+	 * PSCode: when true, the bundled cloud chat agent's UI is hidden throughout the
+	 * workbench. `defaultChatAgent` must still be present because several startup paths
+	 * dereference it unconditionally; this flag suppresses the surface, not the config.
+	 */
+	readonly disableCloudChat?: boolean;
 	readonly chatParticipantRegistry?: string;
 	readonly chatSessionRecommendations?: IChatSessionRecommendation[];
 	readonly emergencyAlertUrl?: string;

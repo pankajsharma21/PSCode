@@ -74,8 +74,10 @@ Most candidates demo the happy path. Demoing a *good* failure is what people rem
 Answer immediately and specifically. Never hedge.
 
 > "The editor, the terminal and the extension host are Microsoft's — that's VS Code, MIT-licensed.
-> I touched eight upstream files, and all eight are branding or build registration: `product.json`
-> for the identity, two build files to register my extension, the icons, and the desktop entry.
+> I touched twelve upstream files: the identity in `product.json`, two build files to register my
+> extension, the icons and desktop entry, a product flag that hides the bundled cloud assistant,
+> and three files where "VS Code" appears in visible UI text. I also deleted the bundled Copilot
+> extension — 4,122 files, about 87% of the repo.
 >
 > Everything AI is mine, and I kept it in one directory — `extensions/pscode-ai/`, 3,695 lines
 > across 17 TypeScript modules — precisely so this question has a clean answer. Happy to walk any
@@ -218,7 +220,7 @@ For this project, because I wanted the product-level surface — own name, own i
 own default settings, and a marketplace that works. An extension can't change any of that.
 
 The cost is real and worth naming: every upstream VS Code release has to be merged. I kept my
-footprint to eight upstream files specifically to keep those merges cheap.
+footprint to twelve upstream files specifically to keep those merges cheap.
 
 **Q: Tell me about something that broke and what you did about it.**
 
@@ -236,9 +238,19 @@ At that point I grepped and found about 51 files reading it. So I stopped and re
 Copilot was cosmetic — the panel is unused, PSCode AI has its own view — and patching 51 call
 sites would have made every future upstream merge painful for no user-visible gain. Wrong trade.
 
+Later I found the lever I should have looked for first. `chatEntitlementService` already hides
+every Copilot surface when the platform doesn't support it, by setting one context key — and the
+chat view, the watermark hints, the help entries and the walkthroughs are all gated on that same
+key. So I added a `disableCloudChat` flag to `product.json`, set the key when it's on, and deleted
+the bundled extension. Two small upstream edits instead of fifty-one, and the panel is genuinely
+gone rather than merely unused.
+
 The lesson I'd actually claim from it: in a fork, the cost of a change isn't the diff, it's the
-diff *times every future rebase*. I keep my upstream footprint at eight files for exactly that
-reason, and I write the limitation down in the README rather than pretending the panel isn't there.
+diff *times every future rebase*. Deleting config that the product treats as required is the
+expensive way; finding the switch the product already has is the cheap one. Twice now the failure
+looked identical — a blank window — and twice the cause was a `product.json` key being read
+unguarded, once `defaultChatAgent` and once `builtInExtensionsEnabledWithAutoUpdates`, where
+removing the key broke *all* extension scanning and silently disabled my own extension too.
 
 **Q: Why no tab autocomplete? Cursor's headline feature.**
 
@@ -321,7 +333,7 @@ Volunteering a weakness reads as senior. Being caught hiding one reads as the op
 - [ ] Can state the 8 modified upstream files from memory
 - [ ] Can draw the architecture on paper without notes
 - [ ] `git log` presentable — no "wip" or "asdf" commits
-- [ ] Know your own numbers: 3,695 lines, 17 modules, 7 tools, 3 providers, 8 upstream files
+- [ ] Know your own numbers: 3,695 lines, 17 modules, 7 tools, 3 providers, 12 upstream files
 
 ---
 

@@ -20,6 +20,15 @@ const EXTENSION_POINTS_OUTPUT = 'src/vs/workbench/services/extensions/common/ext
 const EXTENSION_BUILD_ARGS = ['run', 'gulp', 'compile-extensions', 'compile-extension-media'];
 const COPILOT_BUILD_ARGS = ['--prefix', 'extensions/copilot', 'run', 'compile'];
 
+/**
+ * PSCode does not bundle the copilot extension. Mirror the guard in
+ * build/lib/extensions.ts so this lane is skipped instead of failing when the
+ * directory is absent.
+ */
+function hasCopilotExtension(repoRoot: string): boolean {
+	return fs.existsSync(path.join(repoRoot, 'extensions', 'copilot'));
+}
+
 type Fingerprint = string | null;
 type LaneMode = 'skip' | 'incremental' | 'full';
 
@@ -115,7 +124,7 @@ export async function runBuildFast(repoRoot: string, force: boolean): Promise<vo
 		if (plan.extensions === 'full') {
 			tasks.push(runCommand(repoRoot, npmCommand(), EXTENSION_BUILD_ARGS, 'extensions'));
 		}
-		if (plan.copilot === 'full') {
+		if (plan.copilot === 'full' && hasCopilotExtension(repoRoot)) {
 			tasks.push(runCommand(repoRoot, npmCommand(), COPILOT_BUILD_ARGS, 'copilot'));
 		}
 
@@ -381,7 +390,7 @@ async function runAllFull(repoRoot: string): Promise<void> {
 	await waitForTasks([
 		runCommand(repoRoot, process.execPath, [path.join(repoRoot, 'build', 'next', 'index.ts'), 'transpile'], 'client'),
 		runCommand(repoRoot, npmCommand(), EXTENSION_BUILD_ARGS, 'extensions'),
-		runCommand(repoRoot, npmCommand(), COPILOT_BUILD_ARGS, 'copilot'),
+		...(hasCopilotExtension(repoRoot) ? [runCommand(repoRoot, npmCommand(), COPILOT_BUILD_ARGS, 'copilot')] : []),
 	]);
 }
 

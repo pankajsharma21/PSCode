@@ -452,8 +452,20 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 			return;
 		}
 
+		// PSCode: this product ships a local agent instead of a cloud one. Hiding setup
+		// collapses every Copilot surface (the auxiliary-bar chat view, the editor
+		// watermark hints, the help menu entries and the onboarding walkthroughs),
+		// because they are all gated on this same context key.
+		if (productService.disableCloudChat) {
+			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(true);
+			return;
+		}
+
 		if (!productService.defaultChatAgent) {
-			return; // we need a default chat agent configured going forward from here
+			// Also hide, rather than just bailing out: returning here without setting the
+			// key leaves the chat UI rendered but non-functional.
+			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(true);
+			return;
 		}
 
 		const context = this.context = new Lazy(() => this._register(instantiationService.createInstance(ChatEntitlementContext)));

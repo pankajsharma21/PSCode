@@ -15,6 +15,14 @@ them you are in.
 |---|---|---|
 | **Renderer** | The workbench UI (Electron renderer) | nothing of mine directly |
 | **Webview** | An isolated iframe, no Node, its own origin | `media/chat.js`, `media/chat.css` |
+
+The chat view is contributed to `viewsContainers.secondarySidebar`, which maps to
+`ViewContainerLocation.AuxiliaryBar` — the right-hand bar. That is deliberate: it is the slot a
+cloud assistant normally occupies, and PSCode ships a local one there instead. The bundled
+Copilot extension is deleted, and `product.json`'s `disableCloudChat` flag makes
+`chatEntitlementService` set `ChatContextKeys.Setup.hidden`, which collapses the core chat view,
+the editor watermark hints, the help-menu entries and the onboarding walkthroughs in one move.
+
 | **Extension host** | Node.js, full `vscode` API, filesystem, sockets | all 17 modules in `src/` |
 | **Model server** | Separate OS process, usually `localhost:11434` | not mine — Ollama / llama.cpp |
 

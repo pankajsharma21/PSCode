@@ -30,7 +30,7 @@
   },
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "pscode-ai",
           "title": "PSCode AI",

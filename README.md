@@ -58,7 +58,8 @@ a model write to `../../.ssh/id_rsa`. Showing a diff the user can reject.
 ## Features
 
 ### Chat with real workspace context
-A side-bar panel that streams from your local model and knows what you are looking at. It sends
+A panel in the **right-hand side bar** — where a cloud assistant would normally sit — that streams
+from your local model and knows what you are looking at. It sends
 your selection, the active file, language-server errors for that file, and the names of your other
 open tabs. Type `@filename` to pull any other file in. Every context block sent is shown as a chip
 under the composer with an approximate token count, so nothing is attached behind your back.
@@ -277,16 +278,26 @@ Being precise about this matters more than the line count.
 | Shell | `extension.ts`, `statusBar.ts`, `util/{logger,cancellation}.ts` |
 | Test | `test/provider-smoke.js` |
 
-**Upstream files I modified — 8, all of them branding or registration:**
+**Upstream files I modified — 12,** plus the removal of the bundled Copilot extension:
 
 | File | Change |
 |---|---|
-| `product.json` | Identity, fresh install GUIDs, Open VSX gallery |
-| `package.json` | Name, version, author, repository |
+| `product.json` | Identity, fresh install GUIDs, Open VSX gallery, `disableCloudChat` |
+| `package.json` | Name, version, author, repository; drop the copilot build steps |
 | `build/gulpfile.extensions.ts` | Register `pscode-ai` for compilation |
-| `build/npm/dirs.ts` | Register `pscode-ai` for dependency install |
+| `build/npm/dirs.ts` | Register `pscode-ai`, drop `extensions/copilot` |
 | `resources/linux/code.png`, `resources/win32/code.ico` | New app icon |
 | `resources/linux/*.desktop` | Tagline and keywords |
+| `src/vs/base/common/product.ts` | Declare the `disableCloudChat` flag |
+| `src/vs/workbench/services/chat/common/chatEntitlementService.ts` | Honour it — hides every Copilot surface |
+| `build/hygiene.ts`, `build/gulpfile.hygiene.ts` | Drop a check that read the deleted manifest |
+| `build/next/build-fast.ts` | Skip the copilot lane when it is absent |
+| `.../welcomeGettingStarted/common/gettingStartedContent.ts` | "VS Code" → "PSCode" on the Welcome page |
+| `.../welcomeWalkthrough/browser/editor/vs_code_editor_walkthrough.ts` | Same, in the editor playground |
+| `src/vs/workbench/browser/actions/helpActions.ts` | Same, in the Help menu |
+
+`extensions/copilot` — the bundled GitHub Copilot Chat extension, **4,122 files and 46.9 MB** —
+was deleted outright. It was roughly 87% of the repository.
 
 **Everything else is Microsoft's.** The editor is Monaco, the terminal is xterm.js + node-pty,
 the extension host and IPC are VS Code's. I did not write those and do not claim to.
@@ -307,13 +318,10 @@ Stated plainly, because pretending otherwise wastes your time:
 - **No conversation persistence.** Chats live in memory and die with the window.
 - **Linux is the only tested target.** The build config is cross-platform; I have only run it here.
 - **Only the Linux `.deb` path is exercised.** No signed macOS/Windows installers.
-- **The built-in Copilot chat panel is still present.** I first removed `defaultChatAgent` from
-  `product.json` so the fork would ship no Copilot surface at all. That broke workbench startup:
-  `welcomeOnboarding` hard-asserts the key at module scope, and
-  `services/accounts/browser/defaultAccount.ts` takes it as a non-optional `IDefaultChatAgent` and
-  walks `provider.default.id`. About 51 files read the config. I restored it rather than patch that
-  many call sites for a cosmetic win — the merge cost against upstream would have outweighed an
-  unused panel. PSCode AI lives in its own side-bar view and is independent of it.
+- **"VS Code" still appears in places.** I renamed it on the Welcome page, the editor playground
+  and the Help menu. There are ~1,488 more occurrences across ~1,052 files, nearly all code
+  comments and extension-author schema docs that no user ever sees. Renaming them all would touch
+  most of the repository and make every upstream merge painful, so I stopped at the visible ones.
 
 ---
 
