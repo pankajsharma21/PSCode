@@ -17,6 +17,24 @@ machine — no API key, no account, no code leaving the laptop.
 
 ---
 
+## What it looks like
+
+**Chat with real workspace context** — the model found the off-by-one bug in `totalPrice`.
+Note the chip at the bottom of the panel: `context (~293 tokens): src/cart.ts`, so you always
+see exactly what was sent.
+
+![PSCode AI chat answering a question about the open file](docs/images/chat.png)
+
+**Inline edit (Ctrl+I)** — the proposal streams into a diff beside your file. The red line is
+`i <= items.length`, the green one `i < items.length`. Your buffer is untouched until you press
+Accept in the editor title bar.
+
+![PSCode AI inline edit shown as a diff](docs/images/inline-edit.png)
+
+All of it running against `qwen2.5:7b` on localhost, on a CPU, with no network access.
+
+---
+
 ## Why I built this
 
 Cursor and Antigravity showed that the fastest way to ship an AI-native IDE is to fork VS Code
@@ -108,13 +126,18 @@ Agent mode needs tool calling, so a model without it will only work in Chat mode
 ```bash
 # Linux build prerequisites
 sudo apt-get install -y build-essential pkg-config python3 \
-    libx11-dev libxkbfile-dev libsecret-1-dev libkrb5-dev
+    libx11-dev libxkbfile-dev libkrb5-dev
 
 nvm install && nvm use        # honours .nvmrc (Node 24.18.0)
 npm install                   # ~10 min
 npm run compile               # ~15-30 min the first time
 ./scripts/code.sh             # launch
 ```
+
+> Only `native-keymap` (x11 + xkbfile) and `kerberos` (libkrb5) need dev headers — there is no
+> `keytar`, so `libsecret` is not required. If you cannot use `sudo`, `apt-get download` works
+> unprivileged: fetch those `-dev` packages, `dpkg -x` them into a prefix, repoint the `.pc` files
+> at it, and export `PKG_CONFIG_PATH` / `CPATH` / `LIBRARY_PATH`. That is how this build was made.
 
 For a distributable `.deb`:
 
@@ -258,7 +281,7 @@ Being precise about this matters more than the line count.
 
 | File | Change |
 |---|---|
-| `product.json` | Identity, Open VSX gallery, Copilot chat agent removed |
+| `product.json` | Identity, fresh install GUIDs, Open VSX gallery |
 | `package.json` | Name, version, author, repository |
 | `build/gulpfile.extensions.ts` | Register `pscode-ai` for compilation |
 | `build/npm/dirs.ts` | Register `pscode-ai` for dependency install |
@@ -284,6 +307,13 @@ Stated plainly, because pretending otherwise wastes your time:
 - **No conversation persistence.** Chats live in memory and die with the window.
 - **Linux is the only tested target.** The build config is cross-platform; I have only run it here.
 - **Only the Linux `.deb` path is exercised.** No signed macOS/Windows installers.
+- **The built-in Copilot chat panel is still present.** I first removed `defaultChatAgent` from
+  `product.json` so the fork would ship no Copilot surface at all. That broke workbench startup:
+  `welcomeOnboarding` hard-asserts the key at module scope, and
+  `services/accounts/browser/defaultAccount.ts` takes it as a non-optional `IDefaultChatAgent` and
+  walks `provider.default.id`. About 51 files read the config. I restored it rather than patch that
+  many call sites for a cosmetic win — the merge cost against upstream would have outweighed an
+  unused panel. PSCode AI lives in its own side-bar view and is independent of it.
 
 ---
 
