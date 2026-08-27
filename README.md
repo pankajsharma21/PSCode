@@ -71,6 +71,28 @@ block replaces the selection; with nothing selected the block is treated as the 
 contents, which is what a model that reprints a whole file actually means. A wrong guess costs
 you one click, because you see it in the diff first.
 
+### You can always see what it is doing
+A local 7B model on a CPU can take two minutes to produce its first token. With nothing on screen,
+a working editor and a hung one look identical — which is the single most confusing thing about
+running a model locally. So a strip above the composer always answers two questions: what is
+happening, and for how long.
+
+```
+••• Gathering context            0s
+••• Waiting for qwen2.5:7b       1m 14s · first token · CPU inference is slow to start — still working
+••• Writing                      8s · ~63 tok · 7.9 tok/s
+••• Reading src/checkout.ts      2s · read_file
+••• Deciding what to do next     31s · step 3 of 12
+••• Waiting for you to accept or reject
+```
+
+Tool phases are phrased as work, not as API names — `Reading src/cart.ts`,
+`Finding every use of discountFor`, `Running “npm test”`, `Editing src/tax.ts`. The clock runs in
+the webview, so it keeps counting even while the extension host is blocked waiting on the model,
+and past 30 seconds it says outright that slow first tokens are normal rather than letting you
+conclude it has hung. The strip clears itself when the turn ends, whether it finished, failed or
+was cancelled.
+
 ### Inline edit — <kbd>Ctrl</kbd>+<kbd>I</kbd>
 Select code, describe the change, and watch the model rewrite it **into a live diff view** beside
 your file. Nothing touches your buffer until you press Accept. If the file changed while the model
@@ -557,13 +579,29 @@ PASS  a deleted file was dropped
 PASS  an out-of-scope file stayed out
 ```
 
-The UI is driven end-to-end over the Chrome DevTools Protocol with the Playwright already in the
-repo — panel renders, history persists across a restart, a real chat turn proves `AGENTS.md`
-reaches the model, `@codebase` retrieves the right file, and an agent edit's checkpoint reverts
-byte-for-byte. Two things to know if you do this yourself: never let one driver disconnect and
-then connect another, because the webview iframe detaches and the next run finds an empty panel;
-and test first-run behaviour with a throwaway `--user-data-dir`, or you are testing your own
-stored state rather than what a new user sees.
+The panel itself is driven over the Chrome DevTools Protocol against a real window and a real
+model — `test/ui-driver.js` plus `test/activity-smoke.js`:
+
+```bash
+./scripts/code.sh --remote-debugging-port=9333 \
+    --user-data-dir=/tmp/pscode-uitest --extensions-dir=/tmp/pscode-uitest-ext \
+    --disable-workspace-trust <a small folder>
+node extensions/pscode-ai/test/activity-smoke.js 9333
+```
+
+**Do not use Playwright's `connectOverCDP` for this.** It auto-attaches to every target in the
+browser, including the webview's service worker — and VS Code serves webview resources through
+that worker, so attaching blanks the panel, even one that had already rendered. It is the debugger
+client that does this, not `--remote-debugging-port`: with the flag set and nothing connected, the
+panel renders fine. `ui-driver.js` therefore speaks raw CDP to just two targets, the workbench page
+and the webview iframe, and never touches the service worker. It also has to make an isolated world
+in a nested frame, because the `vscode-webview://` target is only a host frame whose own document
+is empty.
+
+Two more things worth knowing: short phases cannot be caught by polling — on a three-file workspace
+the context build finishes inside any sane sampling interval — so the test records every activity
+message instead; and test first-run behaviour with a throwaway `--user-data-dir`, or you are testing
+your own stored workbench state rather than what a new user sees.
 
 ---
 
@@ -581,7 +619,7 @@ Being precise about this matters more than the line count.
 | Inline edit | `inline/{inlineEdit,proposalDocuments}.ts` |
 | Context | `context/{contextBuilder,projectRules,semanticIndex}.ts` |
 | Shell | `extension.ts`, `statusBar.ts`, `util/{logger,cancellation}.ts` |
-| Test | `test/{provider-smoke,embedding-smoke}.js` |
+| Test | `test/{provider-smoke,embedding-smoke,activity-smoke}.js`, `test/ui-driver.js` |
 
 **Upstream files I modified — 27, plus 2 deleted,** on top of removing the bundled Copilot
 extension. That count is not a claim you have to take on trust:
@@ -656,6 +694,11 @@ Stated plainly, because pretending otherwise wastes your time:
   knows, so `find_symbol`/`find_usages` stay the default whenever a symbol name exists. The index
   follows ordinary edits on its own, but a bulk change is deliberately skipped rather than absorbed,
   so after a branch switch you still rebuild — on a big repo that is minutes of CPU.
+- **A webview service-worker failure blanks the panel.** VS Code serves webview resources through
+  a service worker; if registration fails the AI panel is simply empty, with no dialog and often
+  nothing in the log. PSCode cannot fix that from an extension, but it does notice — if the webview
+  never reports back, you get an error message and the actual remedy (quit, delete the
+  `Service Worker` folder in your user-data directory, start again) instead of a blank pane.
 - **Linux is the only tested target.** The build config is cross-platform; I have only run it here.
 - **Only the Linux `.deb` path is exercised.** No signed macOS/Windows installers.
 - **"VS Code" still appears in places.** I renamed it on the Welcome page, the editor playground

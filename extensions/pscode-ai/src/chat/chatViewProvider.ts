@@ -58,6 +58,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	 */
 	private sessionId = newSessionId();
 
+	/** Set when the webview's script has actually run. See `watchForDeadWebview`. */
+	private webviewReady = false;
+
 	constructor(
 		private readonly extensionUri: vscode.Uri,
 		private readonly history: ChatHistory
@@ -65,6 +68,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 	resolveWebviewView(webviewView: vscode.WebviewView): void {
 		this.view = webviewView;
+		this.watchForDeadWebview();
 
 		webviewView.webview.options = {
 			enableScripts: true,
@@ -79,6 +83,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		});
 
 		webviewView.onDidDispose(() => {
+			this.webviewReady = false;
 			this.inflight?.cancel();
 			// A pending approval whose UI just disappeared must decline, not hang the agent.
 			this.approvals.declineAll();
@@ -87,11 +92,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		});
 	}
 
+	/**
+	 * Notices when the panel renders as an empty pane.
+	 *
+	 * VS Code serves webview resources through a service worker. If that worker fails to
+	 * register - it happens, and a debugger client attaching to it is one way to cause it - the
+	 * panel is simply blank: no error dialog, often nothing in the log, and no hint that the
+	 * remedy is to clear a cache directory. That is a genuinely baffling first experience, and
+	 * PSCode is in a position to name it, because the webview always posts `ready` when its
+	 * script runs. Silence past this deadline means the script never ran.
+	 *
+	 * Only a message and a log line: no attempt to reload or repair, because guessing at a
+	 * broken storage layer is how you turn a blank panel into a lost conversation.
+	 */
+	private watchForDeadWebview(): void {
+		const DEADLINE_MS = 12000;
+		setTimeout(() => {
+			if (this.webviewReady || !this.view) {
+				return;
+			}
+			log.error(
+				'The AI panel webview never reported ready. Its service worker probably failed to '
+				+ 'register, which renders the panel blank.'
+			);
+			void vscode.window.showErrorMessage(
+				'The PSCode AI panel could not load.',
+				'How to fix'
+			).then(choice => {
+				if (choice !== 'How to fix') {
+					return;
+				}
+				void vscode.window.showInformationMessage(
+					'This is a webview service-worker failure, not a problem with your model. '
+					+ 'Quit PSCode, delete the "Service Worker" folder inside your user-data directory '
+					+ '(~/.config/code-oss-dev for a dev build), and start it again. It is a cache and is rebuilt.',
+					{ modal: true }
+				);
+			});
+		}, DEADLINE_MS);
+	}
+
 	/* ---------------------------------------------------------------- intents */
 
 	private async handle(message: InboundMessage): Promise<void> {
 		switch (message.type) {
 			case 'ready':
+				this.webviewReady = true;
 				this.publishStatus();
 				this.publishSessions();
 				break;
@@ -172,6 +218,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			return Promise.resolve(false);
 		}
 		log.info(`[approval] requested id=${request.id} kind=${request.kind} title=${request.title}`);
+		this.activity('waitingForYou', 'Waiting for you to accept or reject', request.filePath);
 		const answer = registry.create(request.id);
 		this.post({ type: 'approvalRequest', ...request });
 		return answer.then(approved => {
@@ -242,6 +289,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		const abort = toAbortSignal(source.token);
 
 		try {
+			this.activity('context', 'Gathering context');
 			const context = await buildContext({ userText: prompt, budgetChars: settings.contextBudgetChars });
 			if (context.semanticNote) {
 				this.post({ type: 'notice', message: context.semanticNote });
@@ -279,6 +327,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				log.warn(`[approval] declining ${this.approvals.size} outstanding request(s) because the turn ended`);
 			}
 			this.approvals.declineAll();
+			this.activityDone();
 			this.post({ type: 'busy', busy: false });
 			this.post({ type: 'assistantDone' });
 
@@ -297,6 +346,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		const provider = createProvider(settings);
 		const rules = await readProjectRules();
 		let reply = '';
+		// One stream event is one token for every provider PSCode speaks, so counting events is
+		// a fair live rate. The authoritative count still comes from the usage event at the end.
+		let tokens = 0;
+
+		this.activity('waiting', `Waiting for ${settings.model}`, 'first token');
 
 		for await (const event of provider.stream(
 			{
@@ -313,8 +367,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				break;
 			}
 			if (event.type === 'text') {
+				if (tokens === 0) {
+					this.activity('writing', 'Writing');
+				}
+				tokens++;
 				reply += event.text;
 				this.post({ type: 'assistantDelta', text: event.text });
+				this.post({ type: 'tokens', tokens });
 			} else if (event.type === 'usage') {
 				this.post({ type: 'usage', promptTokens: event.promptTokens, completionTokens: event.completionTokens });
 			}
@@ -334,6 +393,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		const provider = createProvider(settings);
 		const rules = await readProjectRules();
 		const checkpoint = this.checkpoints.begin(prompt);
+		/** Whether the current phase is streamed prose, so a delta only changes phase once. */
+		let streaming = false;
+		/** Counted per stream event, which is one token for every provider PSCode speaks. */
+		let tokens = 0;
 
 		const produced = await runAgent({
 			provider,
@@ -345,8 +408,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			checkpoint,
 			requestApproval: request => this.requestApproval(request),
 			events: {
-				onText: delta => this.post({ type: 'assistantDelta', text: delta }),
-				onToolStart: call => this.post({ type: 'toolStart', name: call.name, args: call.args }),
+				onText: delta => {
+					if (!streaming) {
+						streaming = true;
+						tokens = 0;
+						this.activity('writing', 'Writing');
+					}
+					tokens++;
+					this.post({ type: 'assistantDelta', text: delta });
+					this.post({ type: 'tokens', tokens });
+				},
+				onToolStart: call => {
+					streaming = false;
+					this.activity('tool', describeToolActivity(call.name, call.args), call.name);
+					this.post({ type: 'toolStart', name: call.name, args: call.args });
+				},
 				onToolTrace: line => this.post({ type: 'toolTrace', line }),
 				onToolResult: (call, ok, summary) => this.post({
 					type: 'toolResult',
@@ -354,7 +430,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 					ok,
 					summary: summary.length > 600 ? `${summary.slice(0, 600)}…` : summary,
 				}),
-				onIteration: (index, max) => this.post({ type: 'iteration', index, max }),
+				onIteration: (index, max) => {
+					streaming = false;
+					// Between tools the model is thinking, and on CPU that is the longest wait in
+					// the whole run - so it gets its own phase rather than looking idle.
+					this.activity(
+						'thinking',
+						index === 1 ? `Waiting for ${settings.model}` : 'Deciding what to do next',
+						`step ${index} of ${max}`
+					);
+					this.post({ type: 'iteration', index, max });
+				},
 				onDone: reason => this.post({ type: 'agentDone', reason }),
 			},
 		});
@@ -563,6 +649,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		reportProviderError(error);
 	}
 
+	/**
+	 * Announces what PSCode is doing now. The webview owns the elapsed clock, so this only has
+	 * to fire on phase changes rather than on a timer.
+	 */
+	private activity(phase: string, label: string, detail?: string): void {
+		this.post({ type: 'activity', phase, label, detail });
+	}
+
+	private activityDone(): void {
+		this.post({ type: 'activityDone' });
+	}
+
 	private post(message: Record<string, unknown>): void {
 		void this.view?.webview.postMessage(message);
 	}
@@ -631,6 +729,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	<div id="context-bar" hidden></div>
 
 	<footer>
+		<div id="activity" hidden aria-live="polite">
+			<span class="activity-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+			<span id="activity-label"></span>
+			<span id="activity-meta"></span>
+		</div>
 		<textarea id="composer" rows="3" placeholder="Ask about your code…  (Enter to send, Shift+Enter for a new line)"></textarea>
 		<div class="actions">
 			<button id="send" class="primary">Send</button>
@@ -643,6 +746,61 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	<script nonce="${nonce}" src="${media('chat.js')}"></script>
 </body>
 </html>`;
+	}
+}
+
+/**
+ * Turns a tool call into something a person can read at a glance.
+ *
+ * The transcript already logs the raw call; this is the "what is it doing right now" line, so it
+ * is phrased as an activity rather than as an API name. On CPU inference a single tool round can
+ * take a minute, and "Reading src/cart.ts" answers the only question the user has during it.
+ */
+function describeToolActivity(name: string, rawArgs: string): string {
+	let args: Record<string, unknown> = {};
+	try {
+		const parsed: unknown = JSON.parse(rawArgs || '{}');
+		if (parsed && typeof parsed === 'object') {
+			args = parsed as Record<string, unknown>;
+		}
+	} catch {
+		// Small models truncate arguments; the phase name alone is still useful.
+	}
+	const text = (key: string): string | undefined => {
+		const value = args[key];
+		return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+	};
+	const path = text('path');
+	const quote = (value: string) => `“${value.length > 40 ? `${value.slice(0, 40)}…` : value}”`;
+
+	switch (name) {
+		case 'read_file': return path ? `Reading ${path}` : 'Reading a file';
+		case 'list_dir': return path ? `Listing ${path}` : 'Listing a directory';
+		case 'project_map': return 'Mapping the project';
+		case 'search_text': {
+			const query = text('query') ?? text('pattern');
+			return query ? `Searching for ${quote(query)}` : 'Searching the workspace';
+		}
+		case 'semantic_search': {
+			const query = text('query');
+			return query ? `Searching by meaning for ${quote(query)}` : 'Searching by meaning';
+		}
+		case 'find_symbol': {
+			const symbol = text('symbol') ?? text('name');
+			return symbol ? `Finding where ${symbol} is defined` : 'Finding a definition';
+		}
+		case 'find_usages': {
+			const symbol = text('symbol') ?? text('name');
+			return symbol ? `Finding every use of ${symbol}` : 'Finding usages';
+		}
+		case 'get_diagnostics': return path ? `Checking ${path} for errors` : 'Checking the project for errors';
+		case 'replace_in_file': return path ? `Editing ${path}` : 'Editing a file';
+		case 'write_file': return path ? `Writing ${path}` : 'Writing a file';
+		case 'run_command': {
+			const command = text('command') ?? text('cmd');
+			return command ? `Running ${quote(command)}` : 'Running a command';
+		}
+		default: return `Running ${name}`;
 	}
 }
 

@@ -25,8 +25,16 @@
 	const historyList = document.getElementById('history-list');
 	const historyEmpty = document.getElementById('history-empty');
 	const historyClose = document.getElementById('history-close');
+	const activity = document.getElementById('activity');
+	const activityLabel = document.getElementById('activity-label');
+	const activityMeta = document.getElementById('activity-meta');
 
 	let mode = 'chat';
+	/** Live activity state. The clock ticks here so the extension only posts phase changes. */
+	let activityState = null;
+	let activityTimer = null;
+	let tokenCount = 0;
+
 	let busy = false;
 	/** Element currently receiving streamed text, and its raw markdown source. */
 	let streamTarget = null;
@@ -388,6 +396,72 @@
 		}
 	}
 
+	/* -------------------------------------------------------------- activity */
+
+	/*
+	 * On CPU-only inference the first token can be minutes away. Without a running clock and a
+	 * phase name, a working editor and a hung one look identical - which is the single most
+	 * confusing thing about a local model. So the strip always answers two questions: what is
+	 * happening, and for how long.
+	 */
+
+	function showActivity(message) {
+		activityState = { phase: message.phase, label: message.label, detail: message.detail, since: Date.now() };
+		if (message.phase !== 'writing') {
+			tokenCount = 0;
+		}
+		activity.hidden = false;
+		paintActivity();
+		if (!activityTimer) {
+			activityTimer = setInterval(paintActivity, 1000);
+		}
+	}
+
+	function hideActivity() {
+		activityState = null;
+		tokenCount = 0;
+		if (activityTimer) {
+			clearInterval(activityTimer);
+			activityTimer = null;
+		}
+		activity.hidden = true;
+		activityLabel.textContent = '';
+		activityMeta.textContent = '';
+	}
+
+	function formatElapsed(ms) {
+		const total = Math.floor(ms / 1000);
+		const minutes = Math.floor(total / 60);
+		const seconds = total % 60;
+		return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, '0')}s` : `${seconds}s`;
+	}
+
+	function paintActivity() {
+		if (!activityState) {
+			return;
+		}
+		const elapsed = Date.now() - activityState.since;
+		activityLabel.textContent = activityState.label;
+
+		const parts = [formatElapsed(elapsed)];
+		if (activityState.detail) {
+			parts.push(activityState.detail);
+		}
+		if (activityState.phase === 'writing' && tokenCount > 0) {
+			const perSecond = tokenCount / Math.max(1, elapsed / 1000);
+			parts.push(`~${tokenCount} tok`);
+			parts.push(`${perSecond.toFixed(1)} tok/s`);
+		}
+		// A local model really can take this long on first token; say so rather than let the
+		// user conclude it has hung.
+		if ((activityState.phase === 'waiting' || activityState.phase === 'thinking') && elapsed > 30000) {
+			parts.push('CPU inference is slow to start — still working');
+		}
+		activityMeta.textContent = parts.join(' · ');
+
+		activity.dataset.phase = activityState.phase;
+	}
+
 	/** Batches re-renders to one per frame; streaming deltas arrive faster than paint. */
 	function queueRender() {
 		if (renderQueued || !streamTarget) {
@@ -619,6 +693,18 @@
 				composer.focus();
 				break;
 
+			case 'activity':
+				showActivity(message);
+				break;
+
+			case 'activityDone':
+				hideActivity();
+				break;
+
+			case 'tokens':
+				tokenCount = message.tokens;
+				break;
+
 			case 'checkpoint':
 				addCheckpoint(message);
 				break;
@@ -641,6 +727,7 @@
 				break;
 
 			case 'cleared':
+				hideActivity();
 				transcript.textContent = '';
 				if (emptyState) {
 					transcript.appendChild(emptyState);
