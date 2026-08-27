@@ -5,14 +5,12 @@ Depends: @@DEPENDS@@
 Recommends: @@RECOMMENDS@@
 Priority: optional
 Architecture: @@ARCHITECTURE@@
-Maintainer: Microsoft Corporation <vscode-linux@microsoft.com>
-Homepage: https://code.visualstudio.com/
+Maintainer: Pankaj Sharma <72573470+pankajsharma21@users.noreply.github.com>
+Homepage: https://github.com/pankajsharma21/PSCode
 Installed-Size: @@INSTALLEDSIZE@@
-Provides: visual-studio-@@NAME@@
-Conflicts: visual-studio-@@NAME@@
-Replaces: visual-studio-@@NAME@@
-Description: Code editing. Redefined.
- Visual Studio Code is a new choice of tool that combines the simplicity of
- a code editor with what developers need for the core edit-build-debug cycle.
- See https://code.visualstudio.com/docs/setup/linux for installation
- instructions and FAQ.
+Description: Code editor with a local-first AI agent
+ PSCode is a fork of Visual Studio Code with an AI assistant built into the
+ product rather than added as an extension: chat with workspace context,
+ inline edit, and an agentic tool loop that reads and edits your files.
+ It talks to a model on your own machine (Ollama by default), so no API key
+ is required and no source code leaves the computer.

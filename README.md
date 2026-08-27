@@ -9,7 +9,7 @@
 Chat, inline edit and an agentic tool loop that run entirely against a model on your own
 machine — no API key, no account, no code leaving the laptop.
 
-[Why](#why-i-built-this) · [Features](#features) · [Quick start](#quick-start) ·
+[Why](#why-i-built-this) · [Features](#features) · [Install](#install) ·
 [Architecture](#architecture) · [What I wrote](#what-i-wrote-vs-what-came-from-vs-code) ·
 [Docs](docs/ARCHITECTURE.md)
 
@@ -64,8 +64,12 @@ your selection, the active file, language-server errors for that file, and the n
 open tabs. Type `@filename` to pull any other file in. Every context block sent is shown as a chip
 under the composer with an approximate token count, so nothing is attached behind your back.
 
-Every fenced code block in a reply gets **Apply** and **Copy** buttons. Apply replaces your
-selection, or inserts at the cursor if nothing is selected.
+Every fenced code block in a reply gets **Apply** and **Copy** buttons. **Apply never edits
+blind:** it builds the proposed file, opens it in a real side-by-side diff, and puts an
+Accept / Reject card in the panel — the same gate agent mode uses. With a selection active the
+block replaces the selection; with nothing selected the block is treated as the file's new
+contents, which is what a model that reprints a whole file actually means. A wrong guess costs
+you one click, because you see it in the diff first.
 
 ### Inline edit — <kbd>Ctrl</kbd>+<kbd>I</kbd>
 Select code, describe the change, and watch the model rewrite it **into a live diff view** beside
@@ -76,7 +80,7 @@ silently corrupting your work.
 With nothing selected, <kbd>Ctrl</kbd>+<kbd>I</kbd> operates on the current line.
 
 ### Agent mode
-Switch the panel to **Agent** and the model gets seven tools:
+Switch the panel to **Agent** and the model gets ten tools:
 
 | Tool | What it does | Guard |
 |---|---|---|
@@ -142,9 +146,12 @@ restrict it to official VS Code builds. Themes, language packs and most tooling 
 
 ---
 
-## Quick start
+## Install
 
-### 1. Get a model running
+PSCode installs like any other editor. Pick one of the three routes below, then point it at a
+model.
+
+### 1. Get a model running first
 
 ```bash
 # Ollama — the default, and the simplest
@@ -153,20 +160,60 @@ ollama serve &
 ollama pull qwen2.5:7b        # tool-capable, ~4.7 GB, runs on CPU
 ```
 
-Any tool-capable model works. `qwen2.5:7b` and `llama3.2` are both good starting points;
-Agent mode needs tool calling, so a model without it will only work in Chat mode.
+Any tool-capable model works. `qwen2.5:7b` and `llama3.2` are both good starting points; Agent
+mode needs tool calling, so a model without it will only work in Chat mode. PSCode talks to
+`http://127.0.0.1:11434` by default and the status bar turns red if nothing answers there.
 
-### 2. Build PSCode
+### 2a. Debian / Ubuntu — the `.deb`
 
 ```bash
-# Linux build prerequisites
+sudo apt install ./pscode_<version>_amd64.deb
+```
+
+`apt` pulls in the dependencies; `dpkg -i` alone will not. That gives you the same things the
+VS Code package gives you:
+
+| | |
+|---|---|
+| `pscode` on your `PATH` | `pscode .` opens the current folder, like `code .` |
+| A desktop entry | "PSCode" in the application menu, with its own icon |
+| `pscode://` URL handler | registered for deep links |
+| An `editor` alternative | registered at priority 0, so it never silently becomes your default |
+
+Uninstall with `sudo apt remove pscode`.
+
+> **This package adds no third-party apt repository and installs no signing key.** Upstream's
+> `postinst` registers Microsoft's apt repo so VS Code can update itself; PSCode is not published
+> to any repo, so that whole block is removed. Updating means installing a newer `.deb`.
+
+### 2b. Any Linux — the tarball, no root needed
+
+```bash
+tar -xzf PSCode-linux-x64-<version>.tar.gz -C ~/.local/opt
+ln -sf ~/.local/opt/PSCode-linux-x64/bin/pscode ~/.local/bin/pscode
+```
+
+Make sure `~/.local/bin` is on your `PATH`. Nothing is written outside your home directory, and
+you can delete the folder to uninstall. To get a menu entry as well:
+
+```bash
+sed -e "s|/usr/share/pscode/pscode|$HOME/.local/opt/PSCode-linux-x64/pscode|" \
+    -e "s|Icon=pscode|Icon=$HOME/.local/opt/PSCode-linux-x64/resources/app/resources/linux/code.png|" \
+    resources/linux/code.desktop > ~/.local/share/applications/pscode.desktop
+update-desktop-database ~/.local/share/applications
+```
+
+### 2c. Build it yourself
+
+```bash
+# Build prerequisites
 sudo apt-get install -y build-essential pkg-config python3 \
     libx11-dev libxkbfile-dev libkrb5-dev
 
 nvm install && nvm use        # honours .nvmrc (Node 24.18.0)
 npm install                   # ~10 min
 npm run compile               # ~15-30 min the first time
-./scripts/code.sh             # launch
+./scripts/code.sh             # launch the dev build
 ```
 
 > Only `native-keymap` (x11 + xkbfile) and `kerberos` (libkrb5) need dev headers — there is no
@@ -174,13 +221,26 @@ npm run compile               # ~15-30 min the first time
 > unprivileged: fetch those `-dev` packages, `dpkg -x` them into a prefix, repoint the `.pc` files
 > at it, and export `PKG_CONFIG_PATH` / `CPATH` / `LIBRARY_PATH`. That is how this build was made.
 
-For a distributable `.deb`:
+**Run the dev build with `./scripts/code.sh`, not `.build/electron/pscode` directly.** The launcher
+sets the environment that puts the app in development mode; the bare binary starts in "built" mode,
+looks for bundled assets a dev build never produces, and renders a blank window.
+
+To produce the installers yourself:
 
 ```bash
-npm run gulp vscode-linux-x64-min
-npm run gulp vscode-linux-x64-prepare-deb
-npm run gulp vscode-linux-x64-build-deb
+npm run gulp vscode-linux-x64-min            # production bundle → ../VSCode-linux-x64
+npm run gulp vscode-linux-x64-prepare-deb    # stage the package tree
+npm run gulp vscode-linux-x64-build-deb      # → .build/linux/deb/amd64/deb/*.deb
+
+# the tarball is just the built tree
+tar -czf PSCode-linux-x64-$(node -p "require('./package.json').version").tar.gz \
+    -C .. VSCode-linux-x64
 ```
+
+`prepare-deb` downloads a Chromium sysroot and runs `dpkg-shlibdeps` to compute the `Depends:`
+field, so it needs network and a working `curl`. It also compares the result against the list
+checked into `build/linux/debian/dep-lists.ts` and **fails the build if they differ** — that guard
+is deliberate, so if you change what gets bundled, update that list rather than disabling it.
 
 ### 3. Use it
 
@@ -192,6 +252,10 @@ npm run gulp vscode-linux-x64-build-deb
 
 The status bar shows the live model and turns red when the server is unreachable — click it to
 switch models from whatever the server reports it has.
+
+**If the AI panel is missing, the folder is untrusted.** `pscode-ai` declares
+`untrustedWorkspaces.supported = false`, so in an untrusted workspace it does not load at all.
+Trust the folder, or launch with `--disable-workspace-trust`.
 
 ---
 
@@ -312,7 +376,16 @@ Being precise about this matters more than the line count.
 | Shell | `extension.ts`, `statusBar.ts`, `util/{logger,cancellation}.ts` |
 | Test | `test/provider-smoke.js` |
 
-**Upstream files I modified — 12,** plus the removal of the bundled Copilot extension:
+**Upstream files I modified — 26, plus 2 deleted,** on top of removing the bundled Copilot
+extension. That count is not a claim you have to take on trust:
+
+```bash
+git diff --name-status $(git rev-list --max-parents=0 HEAD) -- . \
+  ':(exclude)extensions/pscode-ai/**' ':(exclude)extensions/copilot/**' \
+  ':(exclude)README.md' ':(exclude)docs/**' ':(exclude)*AGENTS.md' ':(exclude)*CLAUDE.md'
+```
+
+The interesting ones:
 
 | File | Change |
 |---|---|
@@ -323,7 +396,13 @@ Being precise about this matters more than the line count.
 | `resources/linux/code.png`, `resources/win32/code.ico` | New app icon |
 | `resources/linux/*.desktop` | Tagline and keywords |
 | `src/vs/base/common/product.ts` | Declare the `disableCloudChat` flag |
-| `src/vs/workbench/services/chat/common/chatEntitlementService.ts` | Honour it — hides every Copilot surface |
+| `src/vs/workbench/services/chat/common/chatEntitlementService.ts` | Honour it — and refuse to let anything un-hide it (see below) |
+| `resources/linux/debian/*` | Rebrand the package, and **delete the Microsoft apt-repo registration** |
+| `resources/linux/code.appdata.xml` | PSCode's own AppStream metadata |
+| `build/gulpfile.vscode.ts` | Skip the Copilot ripgrep shim, which has nothing to shim here |
+| `build/linux/dependencies-generator.ts` | Skip the tunnel binary this fork does not build |
+| `build/linux/debian/dep-lists.ts` | Regenerated reference dependency list |
+| `build/gulpfile.vscode.linux.ts` | Normalise package permissions; drop the debconf template |
 | `build/hygiene.ts`, `build/gulpfile.hygiene.ts` | Drop a check that read the deleted manifest |
 | `build/next/build-fast.ts` | Skip the copilot lane when it is absent |
 | `.../welcomeGettingStarted/common/gettingStartedContent.ts` | "VS Code" → "PSCode" on the Welcome page |
@@ -332,6 +411,20 @@ Being precise about this matters more than the line count.
 
 `extensions/copilot` — the bundled GitHub Copilot Chat extension, **4,122 files and 46.9 MB** —
 was deleted outright. It was roughly 87% of the repository.
+
+**Deleting the extension is not what removes the UI.** Every Copilot surface — the chat view in
+the auxiliary bar, the first-run "Welcome to VS Code / Sign in to use GitHub Copilot" overlay, the
+Agents-window button in the title bar, the Copilot status entry — is gated on one context key,
+`chatSetupHidden`. `disableCloudChat` sets it at startup, but that alone is not enough: an account
+policy contribution calls `setForceHidden(false)` for every unblocked account, and because this
+product returns early before building a `ChatEntitlementContext`, that call lands in a fallback
+that writes the key directly and turns it back off. So the product decision has to outrank the
+policy: `setForceHidden` returns early, and the entitlement context pins the key rather than
+restoring it from stored state.
+
+This only ever showed up **on a clean profile** — an existing profile has the view hidden in its
+stored workbench state, which masks it completely. Worth remembering when testing any
+first-run behaviour: `--user-data-dir` to a fresh directory, or you are testing your own history.
 
 **Everything else is Microsoft's.** The editor is Monaco, the terminal is xterm.js + node-pty,
 the extension host and IPC are VS Code's. I did not write those and do not claim to.

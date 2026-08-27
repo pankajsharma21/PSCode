@@ -4,15 +4,9 @@
 	<metadata_license>@@LICENSE@@</metadata_license>
 	<project_license>@@LICENSE@@</project_license>
 	<name>@@NAME_LONG@@</name>
-	<url type="homepage">https://code.visualstudio.com</url>
-	<summary>Visual Studio Code. Code editing. Redefined.</summary>
+	<url type="homepage">https://github.com/pankajsharma21/PSCode</url>
+	<summary>Code editor with a local-first AI agent</summary>
 	<description>
-		<p>Visual Studio Code is a new choice of tool that combines the simplicity of a code editor with what developers need for the core edit-build-debug cycle. See https://code.visualstudio.com/docs/setup/linux for installation instructions and FAQ.</p>
+		<p>PSCode is a fork of Visual Studio Code with an AI assistant built into the product rather than added as an extension: chat with workspace context, inline edit, and an agentic tool loop that reads and edits your files. It talks to a model running on your own machine, so no API key is required and no source code leaves the computer.</p>
 	</description>
-	<screenshots>
-		<screenshot type="default">
-			<image>https://code.visualstudio.com/home/home-screenshot-linux-lg.png</image>
-			<caption>Editing TypeScript and searching for extensions</caption>
-		</screenshot>
-	</screenshots>
 </component>

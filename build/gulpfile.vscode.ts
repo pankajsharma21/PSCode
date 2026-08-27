@@ -687,6 +687,12 @@ function prepareCopilotRipgrepShimTask(platform: string, arch: string, destinati
 		const appNodeModulesDir = path.join(appBase, 'node_modules.asar.unpacked');
 
 		const builtInCopilotExtensionDir = path.join(appBase, 'extensions', 'copilot');
+		// PSCode ships no bundled cloud assistant - extensions/copilot is deleted in this fork, so
+		// there is no SDK to shim. Upstream throws rather than skipping, because upstream always
+		// has it; here an absent directory is the expected state, not a broken build.
+		if (!fs.existsSync(builtInCopilotExtensionDir)) {
+			return;
+		}
 		prepareBuiltInCopilotRipgrepShim(platform, arch, builtInCopilotExtensionDir, appNodeModulesDir);
 	};
 }

@@ -387,7 +387,7 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
-		@IProductService productService: IProductService,
+		@IProductService private readonly productService: IProductService,
 		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -456,7 +456,7 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 		// collapses every Copilot surface (the auxiliary-bar chat view, the editor
 		// watermark hints, the help menu entries and the onboarding walkthroughs),
 		// because they are all gated on this same context key.
-		if (productService.disableCloudChat) {
+		if (this.productService.disableCloudChat) {
 			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(true);
 			return;
 		}
@@ -740,6 +740,17 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 	}
 
 	setForceHidden(hidden: boolean): void {
+		if (this.productService.disableCloudChat) {
+			// PSCode: `hidden` is decided by the product here, not by policy or entitlement, and
+			// nothing is allowed to un-hide it. Without this, accountPolicyGateContribution calls
+			// setForceHidden(false) on startup for every unblocked account; because the early
+			// return in the constructor means there is no ChatEntitlementContext, that lands in
+			// the fallback below and resets chatSetupHidden to false - which is what brought the
+			// cloud chat view, the first-run Copilot sign-in overlay, the Agents-window button
+			// and the Copilot status entry back on a clean profile.
+			return;
+		}
+
 		if (this.context) {
 			this.context.value.setForceHidden(hidden);
 		} else {
@@ -1439,7 +1450,8 @@ export class ChatEntitlementContext extends Disposable {
 		@IStorageService private readonly storageService: IStorageService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@ITelemetryService private readonly telemetryService: ITelemetryService
+		@ITelemetryService private readonly telemetryService: ITelemetryService,
+		@IProductService private readonly productService: IProductService
 	) {
 		super();
 
@@ -1603,7 +1615,12 @@ export class ChatEntitlementContext extends Disposable {
 		this.skuContextKey.set(state.sku);
 
 		this.completedContext.set(!!state.completed);
-		this.hiddenContext.set(!!state.hidden);
+		// PSCode: pin this key when the product ships no cloud chat. ChatEntitlementService sets
+		// it once at startup, but anything that builds its own ChatEntitlementContext - the
+		// sessions window does - reaches here with stored state where `hidden` is false and puts
+		// every Copilot surface back: the auxiliary-bar chat view and the first-run sign-in
+		// overlay. Stored entitlement state must not outrank a product-level decision.
+		this.hiddenContext.set(this.productService.disableCloudChat ? true : !!state.hidden);
 		this.disabledInWorkspaceContext.set(!!state.disabledInWorkspace);
 		this.laterContext.set(!!state.later);
 		this.installedContext.set(!!state.installed);

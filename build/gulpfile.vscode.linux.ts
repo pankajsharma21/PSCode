@@ -109,11 +109,9 @@ function prepareDebPackage(arch: string) {
 			.pipe(replace('@@ARCHITECTURE@@', debArch))
 			.pipe(rename('DEBIAN/postinst'));
 
-		const templates = gulp.src('resources/linux/debian/templates.template', { base: '.' })
-			.pipe(replace('@@NAME@@', product.applicationName))
-			.pipe(rename('DEBIAN/templates'));
-
-		const all = es.merge(control, templates, postinst, postrm, prerm, desktops, appdata, workspaceMime, icon, bash_completion, zsh_completion, code);
+		// No DEBIAN/templates: the only debconf question upstream asks is whether to add
+		// Microsoft's apt repository, and PSCode's postinst no longer does that.
+		const all = es.merge(control, postinst, postrm, prerm, desktops, appdata, workspaceMime, icon, bash_completion, zsh_completion, code);
 
 		return all.pipe(vfs.dest(destination));
 	};
@@ -124,6 +122,10 @@ function buildDebPackage(arch: string) {
 	const cwd = `.build/linux/deb/${debArch}`;
 
 	return async () => {
+		// Normalise permissions before packaging. Under a restrictive umask (0007 is common on
+		// managed machines) the staged tree comes out 770, which dpkg-deb rejects outright for
+		// DEBIAN/ - and which would otherwise ship a package whose files no other user can read.
+		await exec(`chmod -R u+rwX,go+rX,go-w ${product.applicationName}-${debArch}`, { cwd });
 		await exec(`chmod 755 ${product.applicationName}-${debArch}/DEBIAN/postinst ${product.applicationName}-${debArch}/DEBIAN/prerm ${product.applicationName}-${debArch}/DEBIAN/postrm`, { cwd });
 		await exec('mkdir -p deb', { cwd });
 		await exec(`fakeroot dpkg-deb -Zxz -b ${product.applicationName}-${debArch} deb`, { cwd });
