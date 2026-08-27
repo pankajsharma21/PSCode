@@ -8,6 +8,9 @@
 import * as vscode from 'vscode';
 import { EXPLAIN_PROMPT } from './agent/prompts';
 import { ChatViewProvider } from './chat/chatViewProvider';
+import { ChatHistory } from './chat/history';
+import { registerProjectRulesWatcher } from './context/projectRules';
+import { initSemanticIndex } from './context/semanticIndex';
 import { acceptPendingEdit, discardPendingEdit, reportProviderError, runInlineEdit } from './inline/inlineEdit';
 import { registerProposalProvider } from './inline/proposalDocuments';
 import { createProvider, readSettings } from './providers/registry';
@@ -17,12 +20,17 @@ import { log } from './util/logger';
 export function activate(context: vscode.ExtensionContext): void {
 	log.info('PSCode AI activating');
 
-	const chat = new ChatViewProvider(context.extensionUri);
+	// workspaceState, not globalState: a conversation belongs to the codebase it is about.
+	const history = new ChatHistory(context.workspaceState);
+	const chat = new ChatViewProvider(context.extensionUri, history);
+	// globalStorage, so indexing never writes into the user's repository.
+	const index = initSemanticIndex(context.globalStorageUri);
 	const statusBar = new AIStatusBar();
 
 	context.subscriptions.push(
 		statusBar,
 		registerProposalProvider(),
+		registerProjectRulesWatcher(),
 
 		vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chat, {
 			// Keeps the transcript alive when the user switches to another side-bar view.
@@ -35,6 +43,39 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 
 		vscode.commands.registerCommand('pscode.chat.new', () => chat.newChat()),
+		vscode.commands.registerCommand('pscode.restoreCheckpoint', () => chat.restoreLatestCheckpoint()),
+
+		vscode.commands.registerCommand('pscode.buildSemanticIndex', async () => {
+			try {
+				const outcome = await vscode.window.withProgress(
+					{
+						location: vscode.ProgressLocation.Notification,
+						title: 'PSCode AI — building the semantic index',
+						cancellable: true,
+					},
+					(progress, token) => index.build(readSettings(), progress, token)
+				);
+
+				// Reported in full, including what was skipped. A bare "done" would hide that a
+				// cap or an exclude glob quietly left most of the repo out of the index.
+				const parts = [
+					`${outcome.chunks} chunks from ${outcome.filesIndexed} files`,
+					`${outcome.reusedChunks} reused`,
+					`${outcome.filesSkipped} skipped`,
+				];
+				void vscode.window.showInformationMessage(
+					`Semantic index ${outcome.cancelled ? 'partially built (cancelled)' : 'ready'}: ${parts.join(', ')}. `
+					+ 'Use @codebase in chat.'
+				);
+			} catch (error) {
+				reportProviderError(error);
+			}
+		}),
+
+		vscode.commands.registerCommand('pscode.clearSemanticIndex', async () => {
+			await index.clear();
+			void vscode.window.showInformationMessage('Semantic index cleared.');
+		}),
 		vscode.commands.registerCommand('pscode.chat.cancel', () => chat.cancel()),
 		vscode.commands.registerCommand('pscode.addSelectionToChat', () => chat.addSelectionToChat()),
 
@@ -70,7 +111,32 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 	);
 
+	revealPanelOnFirstRun(context);
+
 	log.info('PSCode AI ready');
+}
+
+/**
+ * Shows the AI panel the first time a profile is used.
+ *
+ * `contributes.configurationDefaults` opens the secondary side bar, but it opens with no active
+ * container: upstream's default there is the Copilot chat panel, which `disableCloudChat` hides,
+ * and nothing promotes this container into the empty slot. The result on a fresh profile - the
+ * only experience a new installer gets - is an empty pane where the AI should be, with no hint
+ * that "PSCode: Open AI Chat" is what fixes it.
+ *
+ * Done once per profile and recorded in globalState, because after that the user's own decision
+ * to close the panel has to win. An editor that reopens a panel you closed is worse than one
+ * that never opened it.
+ */
+function revealPanelOnFirstRun(context: vscode.ExtensionContext): void {
+	const KEY = 'pscode.panelRevealed';
+	if (context.globalState.get<boolean>(KEY)) {
+		return;
+	}
+	void context.globalState.update(KEY, true);
+	log.info('First run for this profile: revealing the AI panel');
+	void vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
 }
 
 export function deactivate(): void {

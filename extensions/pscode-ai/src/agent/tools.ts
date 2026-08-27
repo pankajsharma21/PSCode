@@ -12,8 +12,10 @@ import { exec } from 'child_process';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { relativePath } from '../context/contextBuilder';
+import { formatHits, semanticIndex } from '../context/semanticIndex';
 import { showProposedDiff } from '../inline/proposalDocuments';
 import { ApprovalHandler, nextApprovalId } from './approvals';
+import { Checkpoint } from './checkpoints';
 import { AISettings } from '../providers/registry';
 import { ToolSchema } from '../providers/types';
 import { log } from '../util/logger';
@@ -31,6 +33,12 @@ export interface ToolContext {
 	 * by a stray keypress.
 	 */
 	requestApproval: ApprovalHandler;
+	/**
+	 * The current run's checkpoint. Mutating tools capture a file here before changing it,
+	 * which is what makes a whole-turn Restore possible. Optional so a tool can still be
+	 * driven from a test or a one-off command with no checkpoint in play.
+	 */
+	checkpoint?: Checkpoint;
 }
 
 export interface ToolResult {
@@ -428,6 +436,9 @@ const writeFile: AgentTool = {
 			}
 		}
 
+		// Captured after approval and before the write: this is the state Restore returns to.
+		await context.checkpoint?.capture(uri);
+
 		await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
 		context.report(`${existed ? 'Updated' : 'Created'} ${relativePath(uri)} (${content.split('\n').length} lines)`);
 		return { ok: true, content: `Wrote ${relativePath(uri)}.` };
@@ -490,6 +501,8 @@ const replaceInFile: AgentTool = {
 				return { ok: false, content: 'The user rejected this edit. Ask what to change before trying again.' };
 			}
 		}
+
+		await context.checkpoint?.capture(uri);
 
 		const edit = new vscode.WorkspaceEdit();
 		edit.replace(uri, new vscode.Range(document.positionAt(first), document.positionAt(first + find.length)), replacement);
@@ -632,6 +645,65 @@ function runShell(
 	});
 }
 
+/**
+ * Conceptual search, as the deliberate complement to find_symbol/find_usages rather than a
+ * replacement. The description says so bluntly because a small model shown two search tools
+ * will otherwise reach for the newer one for everything, and similarity ranking is strictly
+ * worse than the language server whenever an exact symbol name is available.
+ */
+const semanticSearch: AgentTool = {
+	schema: {
+		name: 'semantic_search',
+		description:
+			'Find code by MEANING when you do not know the symbol name - "where is retry handled", '
+			+ '"what validates uploads". Requires a semantic index the user has built. '
+			+ 'If you know the exact name of a symbol, use find_symbol or find_usages instead: they are exact, this one only ranks by similarity.',
+		parameters: {
+			type: 'object',
+			properties: {
+				query: { type: 'string', description: 'What you are looking for, in plain words.' },
+				limit: { type: 'number', description: 'Maximum results (default 6).' },
+			},
+			required: ['query'],
+		},
+	},
+	async execute(args, context, token) {
+		const query = args['query'];
+		if (typeof query !== 'string' || !query.trim()) {
+			throw new ToolError('A "query" string is required.');
+		}
+
+		const index = semanticIndex();
+		if (!index) {
+			return { ok: false, content: 'The semantic index is not available in this window.' };
+		}
+		await index.load();
+		if (index.size === 0) {
+			return {
+				ok: false,
+				content: 'No semantic index has been built for this workspace, so this tool cannot answer. '
+					+ 'Tell the user to run "PSCode: Build Semantic Index", and use search_text or find_symbol meanwhile.',
+			};
+		}
+
+		const requested = typeof args['limit'] === 'number' ? args['limit'] : context.settings.semanticMaxHits;
+		const limit = Math.max(1, Math.min(12, requested));
+
+		const controller = new AbortController();
+		const sub = token.onCancellationRequested(() => controller.abort());
+		try {
+			const hits = await index.search(query.trim(), limit, controller.signal);
+			if (hits.length === 0) {
+				return { ok: true, content: 'No semantically similar code found. Try search_text with a literal string.' };
+			}
+			context.report(`Semantic search "${query.trim()}" matched ${hits.length} place(s)`);
+			return { ok: true, content: clip(formatHits(hits)) };
+		} finally {
+			sub.dispose();
+		}
+	},
+};
+
 export const ALL_TOOLS: AgentTool[] = [
 	projectMap,
 	findSymbol,
@@ -639,6 +711,7 @@ export const ALL_TOOLS: AgentTool[] = [
 	readFile,
 	listDir,
 	searchText,
+	semanticSearch,
 	getDiagnostics,
 	replaceInFile,
 	writeFile,

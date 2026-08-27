@@ -7,7 +7,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { readSettings } from '../providers/registry';
 import { log } from '../util/logger';
+import { formatHits, semanticIndex } from './semanticIndex';
 
 /** Rough bytes-per-token ratio for code; only used to keep the budget human-meaningful. */
 const CHARS_PER_TOKEN = 3.5;
@@ -27,6 +29,8 @@ export interface BuiltContext {
 	/** Files referenced with @ but not found. */
 	missingMentions: string[];
 	approxTokens: number;
+	/** Set when the user wrote @codebase and something needs saying about the result. */
+	semanticNote?: string;
 }
 
 export interface ContextRequest {
@@ -46,6 +50,12 @@ export function relativePath(uri: vscode.Uri): string {
 	}
 	return uri.fsPath;
 }
+
+/**
+ * `@codebase` is reserved: it means "search the whole project by meaning", not "attach a file
+ * called codebase". Kept out of the file-mention path so it never reports itself as missing.
+ */
+export const CODEBASE_MENTION = 'codebase';
 
 /** Extracts `@some/file.ts` style mentions. Stops at whitespace; strips trailing punctuation. */
 export function parseMentions(text: string): string[] {
@@ -163,6 +173,9 @@ export async function buildContext(request: ContextRequest): Promise<BuiltContex
 		if (remaining <= 0) {
 			break;
 		}
+		if (mention === CODEBASE_MENTION) {
+			continue; // Handled separately, below.
+		}
 		const uri = await resolveMention(mention);
 		if (!uri) {
 			missingMentions.push(mention);
@@ -217,11 +230,77 @@ export async function buildContext(request: ContextRequest): Promise<BuiltContex
 		}
 	}
 
+	// 7. @codebase: conceptual search across the project. Last because it is the only source
+	//    here that costs a network round trip, so it should not run for a question that had
+	//    already spent the budget on the files it named explicitly.
+	let semanticNote: string | undefined;
+	if (parseMentions(userText).includes(CODEBASE_MENTION)) {
+		const result = await searchCodebase(userText, Math.min(remaining, 9000));
+		semanticNote = result.note;
+		if (result.block) {
+			sections.push(result.block);
+			for (const file of result.files) {
+				if (!includedFiles.includes(file)) {
+					includedFiles.push(file);
+				}
+			}
+		}
+	}
+
 	const text = sections.join('\n\n');
 	return {
 		text,
 		includedFiles,
 		missingMentions,
 		approxTokens: Math.round(text.length / CHARS_PER_TOKEN),
+		semanticNote,
 	};
+}
+
+/**
+ * Runs the semantic index for a chat question. Failures are reported as a note rather than
+ * thrown: a missing index should degrade the answer, not refuse to answer at all.
+ */
+async function searchCodebase(
+	userText: string,
+	budget: number
+): Promise<{ block?: string; files: string[]; note?: string }> {
+	const index = semanticIndex();
+	if (!index) {
+		return { files: [], note: 'Semantic search is unavailable in this window.' };
+	}
+
+	await index.load();
+	if (index.size === 0) {
+		return {
+			files: [],
+			note: 'No semantic index for this workspace yet — run "PSCode: Build Semantic Index". Answering without it.',
+		};
+	}
+
+	// The mention itself is not part of the question.
+	const query = userText.replace(/(?:^|\s)@codebase\b/gi, ' ').replace(/\s+/g, ' ').trim();
+	if (!query) {
+		return { files: [], note: 'Add a question after @codebase — on its own there is nothing to search for.' };
+	}
+
+	const controller = new AbortController();
+	try {
+		const hits = await index.search(query, readSettings().semanticMaxHits, controller.signal);
+		if (hits.length === 0) {
+			return { files: [], note: 'Semantic search found nothing similar.' };
+		}
+
+		let block = formatHits(hits);
+		if (block.length > budget) {
+			block = `${block.slice(0, Math.max(0, budget))}\n[...truncated by PSCode: semantic results exceed the context budget...]`;
+		}
+		return {
+			block: `--- SEMANTIC MATCHES for "${query}" (ranked by similarity, not exact)\n${block}`,
+			files: hits.map(hit => `${hit.relativePath}:${hit.startLine}`),
+		};
+	} catch (error) {
+		log.warn('Semantic search failed', error);
+		return { files: [], note: `Semantic search failed: ${error instanceof Error ? error.message : String(error)}` };
+	}
 }

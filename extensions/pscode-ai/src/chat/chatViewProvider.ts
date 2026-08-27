@@ -9,8 +9,11 @@
 import * as vscode from 'vscode';
 import { runAgent } from '../agent/agentLoop';
 import { ApprovalRegistry, ApprovalRequest, nextApprovalId } from '../agent/approvals';
-import { CHAT_SYSTEM_PROMPT } from '../agent/prompts';
+import { Checkpoint, CheckpointStore } from '../agent/checkpoints';
+import { AGENT_SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT } from '../agent/prompts';
 import { buildContext } from '../context/contextBuilder';
+import { readProjectRules, withProjectRules } from '../context/projectRules';
+import { ChatHistory, newSessionId } from './history';
 import { reportProviderError } from '../inline/inlineEdit';
 import { showProposedDiff } from '../inline/proposalDocuments';
 import { AISettings, createProvider, readSettings } from '../providers/registry';
@@ -22,11 +25,12 @@ type Mode = 'chat' | 'agent';
 
 interface InboundMessage {
 	type: 'send' | 'cancel' | 'newChat' | 'apply' | 'copyDone' | 'pickModel' | 'openSettings'
-	| 'ready' | 'approvalResponse' | 'revealDiff';
+	| 'ready' | 'approvalResponse' | 'revealDiff'
+	| 'listSessions' | 'loadSession' | 'deleteSession' | 'restoreCheckpoint';
 	text?: string;
 	mode?: Mode;
 	code?: string;
-	/** approvalResponse */
+	/** approvalResponse, loadSession, deleteSession, restoreCheckpoint */
 	id?: string;
 	approved?: boolean;
 }
@@ -45,7 +49,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	 */
 	private readonly applyApprovals = new ApprovalRegistry();
 
-	constructor(private readonly extensionUri: vscode.Uri) { }
+	/** Snapshots of the agent's file changes, one per turn. */
+	private readonly checkpoints = new CheckpointStore();
+
+	/**
+	 * Which stored session the current transcript belongs to. A new id is minted on "New
+	 * chat" rather than on the first message, so an abandoned empty chat never persists.
+	 */
+	private sessionId = newSessionId();
+
+	constructor(
+		private readonly extensionUri: vscode.Uri,
+		private readonly history: ChatHistory
+	) { }
 
 	resolveWebviewView(webviewView: vscode.WebviewView): void {
 		this.view = webviewView;
@@ -77,6 +93,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		switch (message.type) {
 			case 'ready':
 				this.publishStatus();
+				this.publishSessions();
 				break;
 			case 'send':
 				await this.send(message.text ?? '', message.mode ?? 'chat');
@@ -99,6 +116,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			case 'newChat':
 				this.newChat();
 				break;
+			case 'listSessions':
+				this.publishSessions();
+				break;
+			case 'loadSession':
+				if (message.id) {
+					await this.loadSession(message.id);
+				}
+				break;
+			case 'deleteSession':
+				if (message.id) {
+					await this.history.delete(message.id);
+					this.publishSessions();
+				}
+				break;
+			case 'restoreCheckpoint':
+				if (message.id) {
+					await this.restoreCheckpoint(message.id);
+				}
+				break;
 			case 'apply':
 				await this.applyToEditor(message.code ?? '');
 				break;
@@ -116,8 +152,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	newChat(): void {
 		this.inflight?.cancel();
 		this.conversation = [];
+		this.sessionId = newSessionId();
 		this.post({ type: 'cleared' });
 		this.publishStatus();
+		this.publishSessions();
 	}
 
 	cancel(): void {
@@ -205,6 +243,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 		try {
 			const context = await buildContext({ userText: prompt, budgetChars: settings.contextBudgetChars });
+			if (context.semanticNote) {
+				this.post({ type: 'notice', message: context.semanticNote });
+			}
 			if (context.missingMentions.length) {
 				this.post({
 					type: 'notice',
@@ -224,7 +265,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			this.post({ type: 'assistantStart', mode });
 
 			if (mode === 'agent') {
-				await this.runAgentTurn(settings, source, abort.signal);
+				await this.runAgentTurn(settings, source, abort.signal, prompt);
 			} else {
 				await this.runChatTurn(settings, source, abort.signal);
 			}
@@ -240,6 +281,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			this.approvals.declineAll();
 			this.post({ type: 'busy', busy: false });
 			this.post({ type: 'assistantDone' });
+
+			// Saved here rather than on success only: a cancelled or failed turn is still
+			// worth keeping, and it is the transcript the user will want to look at.
+			await this.history.save(this.sessionId, this.conversation);
+			this.publishSessions();
 		}
 	}
 
@@ -249,11 +295,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		signal: AbortSignal
 	): Promise<void> {
 		const provider = createProvider(settings);
+		const rules = await readProjectRules();
 		let reply = '';
 
 		for await (const event of provider.stream(
 			{
-				messages: [{ role: 'system', content: CHAT_SYSTEM_PROMPT }, ...this.conversation],
+				messages: [
+					{ role: 'system', content: withProjectRules(CHAT_SYSTEM_PROMPT, rules) },
+					...this.conversation,
+				],
 				temperature: settings.temperature,
 				maxTokens: settings.maxTokens,
 			},
@@ -278,9 +328,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	private async runAgentTurn(
 		settings: AISettings,
 		source: vscode.CancellationTokenSource,
-		signal: AbortSignal
+		signal: AbortSignal,
+		prompt: string
 	): Promise<void> {
 		const provider = createProvider(settings);
+		const rules = await readProjectRules();
+		const checkpoint = this.checkpoints.begin(prompt);
 
 		const produced = await runAgent({
 			provider,
@@ -288,6 +341,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			history: this.conversation,
 			token: source.token,
 			signal,
+			systemPrompt: withProjectRules(AGENT_SYSTEM_PROMPT, rules),
+			checkpoint,
 			requestApproval: request => this.requestApproval(request),
 			events: {
 				onText: delta => this.post({ type: 'assistantDelta', text: delta }),
@@ -305,6 +360,123 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		});
 
 		this.conversation.push(...produced);
+		this.offerCheckpoint(checkpoint);
+	}
+
+	/**
+	 * Posts the Restore card once the run is over. A run that only read files leaves no card,
+	 * because a Restore button that reverts nothing is worse than no button at all.
+	 */
+	private offerCheckpoint(checkpoint: Checkpoint): void {
+		this.checkpoints.discardIfEmpty(checkpoint);
+		if (checkpoint.fileCount === 0) {
+			return;
+		}
+		this.post({
+			type: 'checkpoint',
+			id: checkpoint.id,
+			label: checkpoint.label,
+			files: checkpoint.filePaths,
+		});
+	}
+
+	/* ------------------------------------------------------- sessions & undo */
+
+	private publishSessions(): void {
+		this.post({ type: 'sessions', sessions: this.history.list(), currentId: this.sessionId });
+	}
+
+	/**
+	 * Replays a stored session into the transcript. The webview is rebuilt from the messages
+	 * rather than from a saved HTML blob, so a session recorded by an older build still
+	 * renders with the current markdown renderer.
+	 */
+	private async loadSession(id: string): Promise<void> {
+		if (this.inflight) {
+			void vscode.window.showInformationMessage('PSCode AI is still working. Stop it first.');
+			return;
+		}
+
+		const session = this.history.get(id);
+		if (!session) {
+			this.post({ type: 'notice', message: 'That conversation is no longer stored.' });
+			this.publishSessions();
+			return;
+		}
+
+		this.conversation = session.messages;
+		this.sessionId = session.id;
+		this.post({ type: 'cleared' });
+
+		for (const message of session.messages) {
+			if (typeof message.content !== 'string' || !message.content) {
+				continue;
+			}
+			if (message.role === 'user') {
+				// Strip the context block that was appended when the turn was sent; it is
+				// noise on replay and the user never typed it.
+				this.post({ type: 'userMessage', text: message.content.split('\n\n--- ')[0] });
+			} else if (message.role === 'assistant') {
+				this.post({ type: 'assistantStart', mode: 'chat' });
+				this.post({ type: 'assistantDelta', text: message.content });
+				this.post({ type: 'assistantDone' });
+			}
+		}
+
+		this.post({ type: 'notice', message: `Reopened "${session.title}" (${session.messages.length} messages).` });
+		this.publishSessions();
+	}
+
+	/** Reverts every file the given agent turn changed. */
+	private async restoreCheckpoint(id: string): Promise<void> {
+		const checkpoint = this.checkpoints.get(id);
+		if (!checkpoint) {
+			this.post({ type: 'notice', message: 'That checkpoint is no longer available.' });
+			return;
+		}
+
+		const result = await checkpoint.restore();
+		const parts: string[] = [];
+		if (result.reverted.length) {
+			parts.push(`reverted ${result.reverted.length} file(s)`);
+		}
+		if (result.deleted.length) {
+			parts.push(`deleted ${result.deleted.length} file(s) the agent created`);
+		}
+		if (result.failed.length) {
+			parts.push(`could NOT restore ${result.failed.join(', ')}`);
+		}
+
+		this.post({
+			type: 'checkpointRestored',
+			id,
+			message: parts.length ? `Restored: ${parts.join(', ')}. Ctrl+Z undoes the restore.` : 'Nothing to restore.',
+			ok: result.failed.length === 0,
+		});
+	}
+
+	/** Backs out the most recent agent turn. Bound to a command for the palette. */
+	async restoreLatestCheckpoint(): Promise<void> {
+		const available = this.checkpoints.list();
+		if (available.length === 0) {
+			void vscode.window.showInformationMessage('No agent changes to restore.');
+			return;
+		}
+
+		const choice = await vscode.window.showQuickPick(
+			available.map(item => ({
+				label: item.label,
+				description: `${item.filePaths.length} file(s)`,
+				detail: item.filePaths.join(', '),
+				id: item.id,
+			})),
+			{ title: 'PSCode AI — restore a checkpoint', placeHolder: 'Reverts every file that agent turn changed' }
+		);
+		if (!choice) {
+			return;
+		}
+		await vscode.commands.executeCommand('pscode.chat.focus');
+		await this.restoreCheckpoint(choice.id);
 	}
 
 	/* -------------------------------------------------------------- utilities */
@@ -426,11 +598,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			<span id="model-label">connecting…</span>
 		</button>
 		<span class="spacer"></span>
+		<button id="history-button" class="icon" title="Recent conversations" aria-label="Recent conversations" aria-expanded="false">◴</button>
 		<div class="mode-switch" role="radiogroup" aria-label="Mode">
 			<button class="mode active" data-mode="chat" role="radio" aria-checked="true">Chat</button>
 			<button class="mode" data-mode="agent" role="radio" aria-checked="false">Agent</button>
 		</div>
 	</header>
+
+	<div id="history-panel" hidden>
+		<div class="history-head">
+			<strong>Recent conversations</strong>
+			<button id="history-close" class="ghost">Close</button>
+		</div>
+		<ul id="history-list"></ul>
+		<p id="history-empty" class="muted">No saved conversations in this workspace yet.</p>
+	</div>
 
 	<main id="transcript" aria-live="polite">
 		<div class="empty" id="empty-state">
@@ -440,6 +622,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				<li><kbd>Ctrl</kbd>+<kbd>I</kbd> — edit the selection in place</li>
 				<li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> — add the selection here</li>
 				<li>Type <code>@filename</code> to pull a file into context</li>
+				<li>Agent runs get a <strong>checkpoint</strong> — one click reverts the whole turn</li>
+				<li>Repo conventions in <code>AGENTS.md</code> are sent automatically</li>
 			</ul>
 		</div>
 	</main>

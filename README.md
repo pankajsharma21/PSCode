@@ -80,7 +80,7 @@ silently corrupting your work.
 With nothing selected, <kbd>Ctrl</kbd>+<kbd>I</kbd> operates on the current line.
 
 ### Agent mode
-Switch the panel to **Agent** and the model gets ten tools:
+Switch the panel to **Agent** and the model gets eleven tools:
 
 | Tool | What it does | Guard |
 |---|---|---|
@@ -90,6 +90,7 @@ Switch the panel to **Agent** and the model gets ten tools:
 | `read_file` | Read a file, optionally a line range | path confined to workspace |
 | `list_dir` | List a directory | path confined to workspace |
 | `search_text` | Find text (optionally regex) across the workspace | skips `node_modules`, `.git`, build output |
+| `semantic_search` | Find code by **meaning** when you do not know the symbol name | needs an index you built; ranked, not exact |
 | `get_diagnostics` | Read compiler/linter errors | — |
 | `replace_in_file` | Replace an exact snippet | must match exactly once; diff + Accept/Reject |
 | `write_file` | Create or overwrite a file | diff + Accept/Reject in the panel |
@@ -129,6 +130,92 @@ so it asks what to change instead of retrying the same edit.
 The loop is bounded by `pscode.agent.maxIterations` (default 12). When it hits that ceiling it
 **says so in the transcript** instead of stopping quietly — a silent stop is indistinguishable
 from a finished task, which is how agents end up appearing to lie about their work.
+
+### Checkpoints — undo a whole agent turn
+Approving each edit protects each change in isolation. It does not protect you from five
+individually-plausible edits that together do the wrong thing, and reviewing five diffs carefully
+is exactly what a tired person does not do.
+
+So every agent run gets a checkpoint. Before the agent touches a file for the first time in a run,
+its previous contents are captured; when the run ends you get one card:
+
+```
+┌─────────────────────────────────────┐
+│ Checkpoint — 3 file(s) changed      │
+│ src/cart.ts, src/tax.ts, src/api.ts │
+│ [ Restore ]                         │
+└─────────────────────────────────────┘
+```
+
+**Restore** puts all of them back and deletes the files the agent created. It is applied as a
+single `WorkspaceEdit`, which makes it one undo step — so an accidental Restore is itself
+reversible with <kbd>Ctrl</kbd>+<kbd>Z</kbd>. The last ten runs are kept; **PSCode: Restore
+Checkpoint** in the palette reaches the earlier ones. A run that only read files leaves no card,
+because a Restore button that reverts nothing is worse than no button.
+
+Ordinary undo does not cover this: the agent writes through the filesystem and saves, so its
+edits are spread across documents that may never have been open.
+
+### Project rules — `AGENTS.md`
+If your repo has one of `.pscoderules`, `AGENTS.md`, `.cursorrules` or
+`.github/copilot-instructions.md`, its contents are sent with every request, in both Chat and
+Agent mode. Same idea as Cursor's `.cursorrules`: state the house conventions once, in the repo,
+and every contributor's assistant follows them.
+
+This matters more with a local 7B model than with a frontier one. A large model infers house style
+from the surrounding code; a 7B model does not reliably, and will happily write `var`, add a
+framework you do not use, or invent a logging helper. Stating the rules is the cheapest quality
+win available — a few hundred prompt tokens and no extra thinking.
+
+The rules are appended at the *end* of the system prompt, because a small model weights the tail
+of a long prompt more heavily than the middle, and repo-specific rules are the part that must not
+be half-remembered. They are capped at 4000 characters so a long `AGENTS.md` cannot crowd out the
+file you are actually asking about, and a file watcher means editing them takes effect on your
+next message rather than after a reload. Turn it off with `pscode.ai.projectRules`.
+
+### Conversation history
+Chats are saved per workspace and survive a restart — the `◴` button in the panel header lists
+them, newest first, and reopening one replays the transcript. Stored in `workspaceState` rather
+than globally, because a conversation belongs to a codebase: opening a different project should
+not surface the previous project's questions.
+
+Fifty conversations are kept. A session is saved after every turn, including a cancelled or failed
+one — that is often the transcript you want to look at.
+
+### `@codebase` — search by meaning
+`find_symbol` and `find_usages` are exact, and they stay the default for a reason: the language
+server *knows* what a symbol resolves to, where vector similarity only guesses. But they need a
+symbol name, and the questions that matter most on an unfamiliar codebase do not have one —
+"where is retry handled", "what validates the upload".
+
+Run **PSCode: Build Semantic Index** once, then put `@codebase` in a question:
+
+```
+@codebase which function retries a failed operation?
+
+  context: src/retry.js:1  AGENTS.md:1  src/money.js:1
+  → retryWithBackoff in src/retry.js
+```
+
+Embeddings come from a **separate, much smaller model** (`nomic-embed-text`, ~274MB — pull it with
+`ollama pull nomic-embed-text`). A 7B chat model is both wasteful and worse at this. It runs
+comfortably on a CPU: a batch of chunks embeds in well under a second.
+
+Design choices that follow from having no GPU:
+
+- **Indexing is an explicit command, never automatic.** An index you did not ask for, burning a
+  CPU you are compiling on, is a bug.
+- **Vectors are stored as raw `Float32` beside a JSON header**, not as JSON numbers. A 768-dim
+  vector is 3KB binary and roughly 15KB as text; that difference decides whether loading the index
+  is instant or a visible pause.
+- **Staleness is size + mtime per file**, so a rebuild re-embeds only what changed.
+- **One hit per file in the top results.** Three overlapping chunks of the same function would
+  otherwise crowd out the second-best *place*, which is usually what you wanted.
+- Source files only by default. Indexing lock files and bundles spends CPU to make results worse,
+  because a query then matches vendored copies of code you did not write.
+
+The index lives in the extension's global storage, so it never dirties your repo. `@codebase`
+without an index says so and answers anyway rather than refusing.
 
 ### Bring your own model
 | Provider | Use it for | Key needed |
@@ -250,6 +337,18 @@ is deliberate, so if you change what gets bundled, update that list rather than 
 | <kbd>Ctrl</kbd>+<kbd>I</kbd> | Edit the selection (or current line) inline |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> | Add the selection to the chat composer |
 
+From the command palette (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>):
+
+| Command | Action |
+|---|---|
+| **PSCode: Open AI Chat** | Reveal the panel |
+| **PSCode: New Chat** | Start a fresh conversation |
+| **PSCode: Select AI Model** | Pick from what the server actually has |
+| **PSCode: Restore Checkpoint** | Undo an agent turn — reverts every file it changed |
+| **PSCode: Build Semantic Index** | Index the workspace for `@codebase` |
+| **PSCode: Clear Semantic Index** | Delete the index |
+| **PSCode: Show AI Logs** | The extension log, including every approval |
+
 The status bar shows the live model and turns red when the server is unreachable — click it to
 switch models from whatever the server reports it has.
 
@@ -273,6 +372,12 @@ All settings live under `pscode.` in Settings (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
 | `pscode.ai.maxTokens` | `4096` | Per response |
 | `pscode.ai.requestTimeoutMs` | `300000` | Generous: CPU inference is slow to first token |
 | `pscode.ai.contextBudgetChars` | `24000` | Lower it for small-context models |
+| `pscode.ai.projectRules` | `true` | Send `AGENTS.md` / `.cursorrules` with every request |
+| `pscode.ai.embeddingModel` | `nomic-embed-text` | For `@codebase`. Separate from the chat model; changing it invalidates the index |
+| `pscode.ai.semanticInclude` | source globs | What to index. Bundles and lock files make results worse, not better |
+| `pscode.ai.semanticExclude` | `node_modules`, build output, … | What to skip |
+| `pscode.ai.semanticMaxFiles` | `1500` | Bounds how long an index build can take on a CPU |
+| `pscode.ai.semanticMaxHits` | `6` | Matches sent to the model; each costs context budget |
 | `pscode.agent.enabled` | `true` | Turns Agent mode off entirely |
 | `pscode.agent.maxIterations` | `12` | Tool rounds before the loop stops |
 | `pscode.agent.approveShellCommands` | `true` | **Leave this on** unless you know why you're turning it off |
@@ -296,13 +401,18 @@ All settings live under `pscode.` in Settings (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
 │  inline/inlineEdit.ts       Ctrl+I → streamed diff → accept   │
 │  inline/proposalDocuments   virtual read-only diff documents  │
 │  agent/agentLoop.ts         stream → run tools → repeat       │
-│  agent/tools.ts             7 tools + the security boundary   │
+│  agent/tools.ts             11 tools + the security boundary  │
+│  agent/checkpoints.ts       one snapshot per run → Restore    │
+│  chat/history.ts            conversations, per workspace      │
 │  context/contextBuilder.ts  what the model is allowed to see  │
+│  context/projectRules.ts    AGENTS.md → system prompt         │
+│  context/semanticIndex.ts   @codebase: chunk, embed, rank     │
 │                                                              │
 │  providers/  ── LLMProvider ────────────────────────────────┐ │
 │    ollama.ts          NDJSON, native /api/chat             │ │
 │    openaiCompat.ts    SSE, reassembles tool-call fragments  │ │
 │    anthropic.ts       SSE, tool_use blocks                  │ │
+│    embeddings.ts      /api/embed · /v1/embeddings            │ │
 │    http.ts            Node http/https, zero npm deps        │ │
 └──────────────────────────┬───────────────────────────────────┘
                            │  HTTP
@@ -358,6 +468,39 @@ PASS  missing model throws ProviderError
 ALL CHECKS PASSED
 ```
 
+The embedding layer behind `@codebase` is tested the same way, against a real embedding server.
+Both modules load in plain Node because neither imports `vscode` — `embeddings.ts` takes its
+settings as an `import type`, so the dependency is erased at compile time.
+
+```bash
+ollama pull nomic-embed-text
+node extensions/pscode-ai/test/embedding-smoke.js
+```
+
+```
+PASS  one vector per input — 3 vectors
+PASS  vectors are non-empty — 768 dimensions
+PASS  all vectors share a width — stride is uniform
+PASS  a vector is identical to itself — cos=1.0000
+PASS  a meaning-based query ranks the retry snippet first — #0=0.716 #1=0.399 #2=0.391
+PASS  the winning score is clearly ahead — margin=0.317
+PASS  anthropic is refused with a usable message
+PASS  a dead endpoint explains itself
+
+All embedding checks passed.
+```
+
+The check that matters is the ranking one: a plain-words query must rank the code it describes
+above unrelated code, by a clear margin. If that fails, `@codebase` is decoration.
+
+The UI is driven end-to-end over the Chrome DevTools Protocol with the Playwright already in the
+repo — panel renders, history persists across a restart, a real chat turn proves `AGENTS.md`
+reaches the model, `@codebase` retrieves the right file, and an agent edit's checkpoint reverts
+byte-for-byte. Two things to know if you do this yourself: never let one driver disconnect and
+then connect another, because the webview iframe detaches and the next run finds an empty panel;
+and test first-run behaviour with a throwaway `--user-data-dir`, or you are testing your own
+stored state rather than what a new user sees.
+
 ---
 
 ## What I wrote vs what came from VS Code
@@ -368,13 +511,13 @@ Being precise about this matters more than the line count.
 
 | Area | Files |
 |---|---|
-| Provider layer | `providers/{types,http,ollama,openaiCompat,anthropic,registry}.ts` |
-| Agent | `agent/{agentLoop,tools,prompts}.ts` |
-| Chat | `chat/chatViewProvider.ts`, `media/chat.{js,css}` |
+| Provider layer | `providers/{types,http,ollama,openaiCompat,anthropic,embeddings,registry}.ts` |
+| Agent | `agent/{agentLoop,tools,prompts,approvals,checkpoints}.ts` |
+| Chat | `chat/{chatViewProvider,history}.ts`, `media/chat.{js,css}` |
 | Inline edit | `inline/{inlineEdit,proposalDocuments}.ts` |
-| Context | `context/contextBuilder.ts` |
+| Context | `context/{contextBuilder,projectRules,semanticIndex}.ts` |
 | Shell | `extension.ts`, `statusBar.ts`, `util/{logger,cancellation}.ts` |
-| Test | `test/provider-smoke.js` |
+| Test | `test/{provider-smoke,embedding-smoke}.js` |
 
 **Upstream files I modified — 26, plus 2 deleted,** on top of removing the bundled Copilot
 extension. That count is not a claim you have to take on trust:
@@ -444,7 +587,10 @@ Stated plainly, because pretending otherwise wastes your time:
   successive edits and corrupted a function signature. PSCode now blocks exact repeat calls and caps
   edits at two per file per task, which stops the damage, but it cannot make a small model reason
   better. They also sometimes *narrate* changes they did not make, so read the diff, not the prose.
-- **No conversation persistence.** Chats live in memory and die with the window.
+- **`@codebase` is ranked, not exact, and the index is manual.** Similarity retrieval guesses
+  where the language server knows, so `find_symbol`/`find_usages` stay the default whenever a
+  symbol name exists. The index does not refresh itself either: after a large branch switch you
+  rebuild it, and on a big repo that is minutes of CPU.
 - **Linux is the only tested target.** The build config is cross-platform; I have only run it here.
 - **Only the Linux `.deb` path is exercised.** No signed macOS/Windows installers.
 - **"VS Code" still appears in places.** I renamed it on the Welcome page, the editor playground
@@ -456,7 +602,11 @@ Stated plainly, because pretending otherwise wastes your time:
 
 ## Roadmap
 
-- [ ] Persist conversations across restarts
+- [x] Persist conversations across restarts
+- [x] Whole-turn checkpoints with one-click restore
+- [x] Project rules from `AGENTS.md`
+- [x] `@codebase` semantic search over a local embedding index
+- [ ] Incremental reindexing on save, so `@codebase` stops needing a manual rebuild
 - [ ] Tab autocomplete with a small FIM model, behind a GPU check
 - [ ] Multi-file diff review before applying a whole agent changeset
 - [ ] `@symbol` context via the language server, not just `@file`

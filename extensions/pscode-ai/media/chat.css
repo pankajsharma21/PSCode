@@ -441,3 +441,161 @@ footer {
 	letter-spacing: 0.06em;
 	color: var(--vscode-descriptionForeground);
 }
+
+/* ------------------------------------------------------------- checkpoints */
+
+/*
+ * Deliberately quieter than an approval card. An approval blocks the agent and needs the
+ * eye; a checkpoint is a safety net that should be findable, not attention-grabbing.
+ */
+.checkpoint-card {
+	border: 1px solid var(--vscode-panel-border);
+	border-left: 2px solid var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+	border-radius: 4px;
+	padding: 6px 8px;
+	margin: 8px 0;
+	background: var(--vscode-editorWidget-background);
+}
+
+.checkpoint-title {
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.checkpoint-files {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+	word-break: break-all;
+}
+
+.checkpoint-actions {
+	margin-top: 6px;
+}
+
+.checkpoint-actions button {
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	font-family: inherit;
+	font-size: 11px;
+	padding: 2px 10px;
+	border-radius: 3px;
+	cursor: pointer;
+}
+
+.checkpoint-actions button:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.checkpoint-status {
+	font-size: 11px;
+	margin-top: 6px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.checkpoint-status.failed {
+	color: var(--vscode-errorForeground);
+}
+
+/* ---------------------------------------------------------------- history */
+
+.icon {
+	border: 0;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-size: 13px;
+	padding: 2px 6px;
+	cursor: pointer;
+	border-radius: 3px;
+}
+
+.icon:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+#history-panel {
+	border-bottom: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-editorWidget-background);
+	max-height: 45%;
+	overflow-y: auto;
+	flex: 0 0 auto;
+}
+
+.history-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
+	font-size: 11px;
+}
+
+.history-head strong {
+	flex: 1;
+}
+
+#history-list {
+	list-style: none;
+	margin: 0;
+	padding: 0 0 4px;
+}
+
+#history-list li {
+	display: flex;
+	align-items: stretch;
+}
+
+#history-list li.current .session-title {
+	font-weight: 600;
+}
+
+.session-open {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	text-align: left;
+	border: 0;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-family: inherit;
+	font-size: 12px;
+	padding: 4px 8px;
+	cursor: pointer;
+	min-width: 0;
+}
+
+.session-open:hover,
+.session-delete:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.session-title {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.session-meta {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.session-delete {
+	border: 0;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-size: 14px;
+	line-height: 1;
+	padding: 0 8px;
+	cursor: pointer;
+}
+
+.muted {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	padding: 0 8px 8px;
+	margin: 0;
+}

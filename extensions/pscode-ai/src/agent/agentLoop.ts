@@ -11,6 +11,7 @@ import { AISettings } from '../providers/registry';
 import { ChatMessage, LLMProvider, ToolCall } from '../providers/types';
 import { log } from '../util/logger';
 import { ApprovalHandler } from './approvals';
+import { Checkpoint } from './checkpoints';
 import { AGENT_SYSTEM_PROMPT } from './prompts';
 import { ALL_TOOLS, describeToolError, toolByName, ToolContext } from './tools';
 
@@ -33,6 +34,13 @@ export interface AgentRunOptions {
 	signal: AbortSignal;
 	/** Renders Accept/Reject in the chat panel and resolves with the user's choice. */
 	requestApproval: ApprovalHandler;
+	/**
+	 * System prompt to use. The caller supplies it so the project's own rules file can be
+	 * folded in; falls back to the stock agent prompt when it is omitted.
+	 */
+	systemPrompt?: string;
+	/** Snapshot for this run, so every file the tools touch can be restored in one go. */
+	checkpoint?: Checkpoint;
 }
 
 /**
@@ -41,14 +49,14 @@ export interface AgentRunOptions {
  * into the conversation.
  */
 export async function runAgent(options: AgentRunOptions): Promise<ChatMessage[]> {
-	const { provider, settings, history, events, token, signal, requestApproval } = options;
+	const { provider, settings, history, events, token, signal, requestApproval, checkpoint } = options;
 
 	if (!provider.supportsTools) {
 		throw new Error(`${provider.label} does not support tool calling, so Agent mode is unavailable. Switch to Chat mode.`);
 	}
 
 	const messages: ChatMessage[] = [
-		{ role: 'system', content: AGENT_SYSTEM_PROMPT },
+		{ role: 'system', content: options.systemPrompt ?? AGENT_SYSTEM_PROMPT },
 		...history,
 	];
 	const produced: ChatMessage[] = [];
@@ -57,6 +65,7 @@ export async function runAgent(options: AgentRunOptions): Promise<ChatMessage[]>
 		settings,
 		report: line => events.onToolTrace(line),
 		requestApproval,
+		checkpoint,
 	};
 
 	const maxIterations = Math.max(1, settings.agentMaxIterations);

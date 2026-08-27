@@ -20,6 +20,11 @@
 	const modelLabel = document.getElementById('model-label');
 	const statusDot = document.getElementById('status-dot');
 	const contextBar = document.getElementById('context-bar');
+	const historyButton = document.getElementById('history-button');
+	const historyPanel = document.getElementById('history-panel');
+	const historyList = document.getElementById('history-list');
+	const historyEmpty = document.getElementById('history-empty');
+	const historyClose = document.getElementById('history-close');
 
 	let mode = 'chat';
 	let busy = false;
@@ -263,6 +268,126 @@
 		return trace;
 	}
 
+	/**
+	 * The whole-turn undo card. Rendered once per agent run that changed files; the button is
+	 * disabled the moment it is used, because a second Restore would revert the user's own
+	 * work done since the first one.
+	 */
+	function addCheckpoint(message) {
+		hideEmptyState();
+		const card = document.createElement('div');
+		card.className = 'checkpoint-card';
+		card.dataset.checkpointId = message.id;
+
+		const title = document.createElement('div');
+		title.className = 'checkpoint-title';
+		title.textContent = `Checkpoint — ${message.files.length} file(s) changed`;
+		card.appendChild(title);
+
+		const files = document.createElement('div');
+		files.className = 'checkpoint-files';
+		files.textContent = message.files.join(', ');
+		card.appendChild(files);
+
+		const actions = document.createElement('div');
+		actions.className = 'checkpoint-actions';
+		const restore = document.createElement('button');
+		restore.textContent = 'Restore';
+		restore.title = 'Revert every file this agent turn changed';
+		restore.addEventListener('click', () => {
+			restore.disabled = true;
+			restore.textContent = 'Restoring…';
+			vscode.postMessage({ type: 'restoreCheckpoint', id: message.id });
+		});
+		actions.appendChild(restore);
+		card.appendChild(actions);
+
+		transcript.appendChild(card);
+		scrollToBottom();
+	}
+
+	function markCheckpointRestored(id, text, ok) {
+		const card = transcript.querySelector(`[data-checkpoint-id="${id}"]`);
+		if (!card) {
+			return;
+		}
+		const actions = card.querySelector('.checkpoint-actions');
+		if (actions) {
+			actions.textContent = '';
+		}
+		const status = document.createElement('div');
+		status.className = ok ? 'checkpoint-status' : 'checkpoint-status failed';
+		status.textContent = text;
+		card.appendChild(status);
+	}
+
+	function renderSessions(sessions, currentId) {
+		historyList.textContent = '';
+		const items = sessions || [];
+		historyEmpty.hidden = items.length > 0;
+
+		for (const session of items) {
+			const row = document.createElement('li');
+			if (session.id === currentId) {
+				row.className = 'current';
+			}
+
+			const open = document.createElement('button');
+			open.className = 'session-open';
+			open.title = 'Reopen this conversation';
+			const name = document.createElement('span');
+			name.className = 'session-title';
+			name.textContent = session.title;
+			const meta = document.createElement('span');
+			meta.className = 'session-meta';
+			meta.textContent = `${session.messageCount} msg · ${relativeTime(session.updatedAt)}`;
+			open.appendChild(name);
+			open.appendChild(meta);
+			open.addEventListener('click', () => {
+				vscode.postMessage({ type: 'loadSession', id: session.id });
+				toggleHistory(false);
+			});
+
+			const remove = document.createElement('button');
+			remove.className = 'session-delete';
+			remove.textContent = '×';
+			remove.title = 'Delete this conversation';
+			remove.addEventListener('click', event => {
+				event.stopPropagation();
+				vscode.postMessage({ type: 'deleteSession', id: session.id });
+			});
+
+			row.appendChild(open);
+			row.appendChild(remove);
+			historyList.appendChild(row);
+		}
+	}
+
+	function relativeTime(timestamp) {
+		const seconds = Math.max(1, Math.round((Date.now() - timestamp) / 1000));
+		if (seconds < 60) {
+			return 'just now';
+		}
+		const minutes = Math.round(seconds / 60);
+		if (minutes < 60) {
+			return `${minutes}m ago`;
+		}
+		const hours = Math.round(minutes / 60);
+		if (hours < 24) {
+			return `${hours}h ago`;
+		}
+		return `${Math.round(hours / 24)}d ago`;
+	}
+
+	function toggleHistory(open) {
+		const show = open === undefined ? historyPanel.hidden : open;
+		historyPanel.hidden = !show;
+		historyButton.setAttribute('aria-expanded', String(show));
+		if (show) {
+			vscode.postMessage({ type: 'listSessions' });
+		}
+	}
+
 	/** Batches re-renders to one per frame; streaming deltas arrive faster than paint. */
 	function queueRender() {
 		if (renderQueued || !streamTarget) {
@@ -303,6 +428,8 @@
 	stopButton.addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
 	newChatButton.addEventListener('click', () => vscode.postMessage({ type: 'newChat' }));
 	modelButton.addEventListener('click', () => vscode.postMessage({ type: 'pickModel' }));
+	historyButton.addEventListener('click', () => toggleHistory());
+	historyClose.addEventListener('click', () => toggleHistory(false));
 
 	composer.addEventListener('keydown', event => {
 		if (event.key === 'Enter' && !event.shiftKey) {
@@ -490,6 +617,18 @@
 
 			case 'focusInput':
 				composer.focus();
+				break;
+
+			case 'checkpoint':
+				addCheckpoint(message);
+				break;
+
+			case 'checkpointRestored':
+				markCheckpointRestored(message.id, message.message, message.ok);
+				break;
+
+			case 'sessions':
+				renderSessions(message.sessions, message.currentId);
 				break;
 
 			case 'notice':
