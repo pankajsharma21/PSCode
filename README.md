@@ -217,6 +217,22 @@ Design choices that follow from having no GPU:
 The index lives in the extension's global storage, so it never dirties your repo. `@codebase`
 without an index says so and answers anyway rather than refusing.
 
+**It keeps itself current.** Saving a file re-embeds that one file, and a filesystem watcher
+catches the changes no editor saw — a `git pull`, a generator, another tool. Creates are added,
+deletes are dropped, renames are both.
+
+Two rules keep that from becoming a nuisance:
+
+- **It never builds an index for you.** With no index, a save does nothing. Turning `Ctrl+S` into
+  minutes of unrequested CPU would be a bug, so indexing stays something you ask for.
+- **A bulk change is refused, not absorbed.** A branch switch rewrites hundreds of files; re-embedding
+  them all would pin the CPU in the background for minutes. Past 40 files in one window PSCode stops,
+  logs why, and — because nobody reads logs — **`@codebase` itself then tells you the index is behind
+  and to rebuild**. A quietly incomplete index gives confidently wrong answers, which is worse than
+  saying so.
+
+Turn the whole thing off with `pscode.ai.semanticAutoUpdate`.
+
 ### Bring your own model
 | Provider | Use it for | Key needed |
 |---|---|---|
@@ -410,6 +426,7 @@ All settings live under `pscode.` in Settings (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
 | `pscode.ai.semanticExclude` | `node_modules`, build output, … | What to skip |
 | `pscode.ai.semanticMaxFiles` | `1500` | Bounds how long an index build can take on a CPU |
 | `pscode.ai.semanticMaxHits` | `6` | Matches sent to the model; each costs context budget |
+| `pscode.ai.semanticAutoUpdate` | `true` | Re-embed a file when it changes. Only ever updates an index that already exists |
 | `pscode.agent.enabled` | `true` | Turns Agent mode off entirely |
 | `pscode.agent.maxIterations` | `12` | Tool rounds before the loop stops |
 | `pscode.agent.approveShellCommands` | `true` | **Leave this on** unless you know why you're turning it off |
@@ -525,6 +542,21 @@ All embedding checks passed.
 The check that matters is the ranking one: a plain-words query must rank the code it describes
 above unrelated code, by a clear margin. If that fails, `@codebase` is decoration.
 
+Incremental indexing is verified against the index itself rather than against model prose: build a
+baseline, then create, edit and delete files and assert on what the stored index contains — which
+files, how many chunks each, and that the vector blob stays exactly `chunks × dims × 4` bytes, since
+a stride mismatch there would silently corrupt every ranking rather than fail. The bulk-change guard
+is checked by writing 60 files at once and confirming the index does not move.
+
+```
+PASS  baseline index built — files=["AGENTS.md","src/money.js","src/retry.js"] chunks=3
+PASS  vector blob matches the chunk count — 9216 bytes = 3×768×4
+PASS  a file created after the build was indexed
+PASS  an edited file was re-embedded — 1 → 6 chunk(s)
+PASS  a deleted file was dropped
+PASS  an out-of-scope file stayed out
+```
+
 The UI is driven end-to-end over the Chrome DevTools Protocol with the Playwright already in the
 repo — panel renders, history persists across a restart, a real chat turn proves `AGENTS.md`
 reaches the model, `@codebase` retrieves the right file, and an agent edit's checkpoint reverts
@@ -620,10 +652,10 @@ Stated plainly, because pretending otherwise wastes your time:
   successive edits and corrupted a function signature. PSCode now blocks exact repeat calls and caps
   edits at two per file per task, which stops the damage, but it cannot make a small model reason
   better. They also sometimes *narrate* changes they did not make, so read the diff, not the prose.
-- **`@codebase` is ranked, not exact, and the index is manual.** Similarity retrieval guesses
-  where the language server knows, so `find_symbol`/`find_usages` stay the default whenever a
-  symbol name exists. The index does not refresh itself either: after a large branch switch you
-  rebuild it, and on a big repo that is minutes of CPU.
+- **`@codebase` is ranked, not exact.** Similarity retrieval guesses where the language server
+  knows, so `find_symbol`/`find_usages` stay the default whenever a symbol name exists. The index
+  follows ordinary edits on its own, but a bulk change is deliberately skipped rather than absorbed,
+  so after a branch switch you still rebuild — on a big repo that is minutes of CPU.
 - **Linux is the only tested target.** The build config is cross-platform; I have only run it here.
 - **Only the Linux `.deb` path is exercised.** No signed macOS/Windows installers.
 - **"VS Code" still appears in places.** I renamed it on the Welcome page, the editor playground
@@ -639,7 +671,7 @@ Stated plainly, because pretending otherwise wastes your time:
 - [x] Whole-turn checkpoints with one-click restore
 - [x] Project rules from `AGENTS.md`
 - [x] `@codebase` semantic search over a local embedding index
-- [ ] Incremental reindexing on save, so `@codebase` stops needing a manual rebuild
+- [x] Incremental reindexing on save and on filesystem change
 - [ ] Tab autocomplete with a small FIM model, behind a GPU check
 - [ ] Multi-file diff review before applying a whole agent changeset
 - [ ] `@symbol` context via the language server, not just `@file`

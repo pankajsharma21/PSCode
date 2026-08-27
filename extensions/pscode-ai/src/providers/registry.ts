@@ -27,6 +27,8 @@ export interface AISettings {
 	semanticExclude: string;
 	semanticMaxFiles: number;
 	semanticMaxHits: number;
+	/** Re-embed a file when it is saved, so @codebase does not go stale between builds. */
+	semanticAutoUpdate: boolean;
 }
 
 /** Default endpoint per provider, used when the user has not overridden it. */
@@ -70,6 +72,7 @@ export function readSettings(): AISettings {
 		semanticExclude: config.get<string>('ai.semanticExclude', DEFAULT_SEMANTIC_EXCLUDE),
 		semanticMaxFiles: config.get<number>('ai.semanticMaxFiles', 1500),
 		semanticMaxHits: config.get<number>('ai.semanticMaxHits', 6),
+		semanticAutoUpdate: config.get<boolean>('ai.semanticAutoUpdate', true),
 	};
 }
 

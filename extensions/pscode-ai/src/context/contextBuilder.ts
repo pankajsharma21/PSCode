@@ -287,8 +287,11 @@ async function searchCodebase(
 	const controller = new AbortController();
 	try {
 		const hits = await index.search(query, readSettings().semanticMaxHits, controller.signal);
+		const staleWarning = index.mayBeStale
+			? ' Note: a bulk change (a branch switch?) was skipped, so the index is behind the workspace — run "PSCode: Build Semantic Index".'
+			: '';
 		if (hits.length === 0) {
-			return { files: [], note: 'Semantic search found nothing similar.' };
+			return { files: [], note: `Semantic search found nothing similar.${staleWarning}` };
 		}
 
 		let block = formatHits(hits);
@@ -298,6 +301,7 @@ async function searchCodebase(
 		return {
 			block: `--- SEMANTIC MATCHES for "${query}" (ranked by similarity, not exact)\n${block}`,
 			files: hits.map(hit => `${hit.relativePath}:${hit.startLine}`),
+			note: staleWarning ? staleWarning.trim() : undefined,
 		};
 	} catch (error) {
 		log.warn('Semantic search failed', error);

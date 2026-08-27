@@ -14,6 +14,7 @@
  *     vector is 3KB binary and roughly 15KB as text; the difference decides whether loading
  *     the index is instant or a visible pause.
  *   - Staleness is size+mtime per file, so a rebuild re-embeds only what changed.
+ *   - Saving a file re-embeds just that file, so the index stays true between full builds.
  *--------------------------------------------------------------------------------------------*/
 
 import * as crypto from 'crypto';
@@ -38,6 +39,23 @@ const MAX_FILE_BYTES = 200 * 1024;
 
 /** Batched because per-request overhead dominates for a small embedding model. */
 const EMBED_BATCH = 16;
+
+/**
+ * How long to sit idle before writing the index back after incremental updates. Saving is a
+ * whole-file rewrite of the vector blob, so doing it per save would turn a 200ms re-embed into
+ * a multi-megabyte disk write on every Ctrl+S.
+ */
+const PERSIST_IDLE_MS = 4000;
+
+/**
+ * How long a "which files are in scope" answer stays good for.
+ *
+ * There is no glob matcher available to an extension, and this extension has no runtime npm
+ * dependencies to add one, so scope is decided by asking `findFiles` - which honours both the
+ * include and the exclude glob exactly as the full build does. That call is cheap but not free,
+ * hence the cache: a burst of saves across a rename or a branch switch triggers one scan.
+ */
+const SCOPE_CACHE_MS = 30000;
 
 interface Chunk {
 	relativePath: string;
@@ -119,6 +137,16 @@ export class SemanticIndex {
 	private files: Record<string, FileStamp> = {};
 	private model = '';
 	private loaded = false;
+	/** Set while a full build is running, so incremental updates stay out of its way. */
+	private building = false;
+	private persistTimer: ReturnType<typeof setTimeout> | undefined;
+	private scopeCache: { paths: Set<string>; at: number } | undefined;
+	/**
+	 * Set when a bulk change was skipped rather than re-embedded. The log alone is not enough:
+	 * nobody reads the log, and an index quietly missing a whole branch's worth of files gives
+	 * confidently wrong answers. @codebase says so instead.
+	 */
+	private staleBatch = false;
 
 	constructor(private readonly storageUri: vscode.Uri) { }
 
@@ -128,6 +156,15 @@ export class SemanticIndex {
 
 	get indexedModel(): string {
 		return this.model;
+	}
+
+	/** True when a bulk change was skipped, so search results may be behind the workspace. */
+	get mayBeStale(): boolean {
+		return this.staleBatch;
+	}
+
+	markStaleBatch(): void {
+		this.staleBatch = true;
 	}
 
 	private get headerUri(): vscode.Uri {
@@ -227,7 +264,21 @@ export class SemanticIndex {
 		token: vscode.CancellationToken
 	): Promise<BuildOutcome> {
 		await this.load();
+		this.building = true;
+		this.scopeCache = undefined;
 
+		try {
+			return await this.buildInner(settings, progress, token);
+		} finally {
+			this.building = false;
+		}
+	}
+
+	private async buildInner(
+		settings: AISettings,
+		progress: vscode.Progress<{ message?: string; increment?: number }>,
+		token: vscode.CancellationToken
+	): Promise<BuildOutcome> {
 		const client = createEmbeddingClient(settings);
 		// A vector is only comparable to vectors from the same model, so switching the
 		// embedding model invalidates everything already stored.
@@ -338,6 +389,10 @@ export class SemanticIndex {
 		this.chunks = keptChunks;
 		this.files = nextFiles;
 		outcome.chunks = keptChunks.length;
+		// A full build is the thing that catches up, so the warning has served its purpose.
+		if (!outcome.cancelled) {
+			this.staleBatch = false;
+		}
 
 		// Saved even on cancellation: a partial index is useful, and throwing away minutes of
 		// CPU because the user changed their mind about waiting would be hostile.
@@ -348,6 +403,126 @@ export class SemanticIndex {
 			+ (outcome.cancelled ? ', cancelled early' : '')
 		);
 		return outcome;
+	}
+
+	/* ----------------------------------------------------------- incremental */
+
+	/**
+	 * Is this file one the index covers?
+	 *
+	 * A file already in the index is in scope by definition - it got there through the build's
+	 * own globs. Anything else is decided by `findFiles`, cached briefly, because there is no
+	 * glob matcher to call directly.
+	 */
+	private async isInScope(uri: vscode.Uri, settings: AISettings): Promise<boolean> {
+		const relative = vscode.workspace.asRelativePath(uri, false);
+		if (this.files[relative]) {
+			return true;
+		}
+
+		const now = Date.now();
+		if (!this.scopeCache || now - this.scopeCache.at > SCOPE_CACHE_MS) {
+			const found = await vscode.workspace.findFiles(
+				settings.semanticInclude,
+				settings.semanticExclude,
+				settings.semanticMaxFiles
+			);
+			this.scopeCache = {
+				paths: new Set(found.map(f => vscode.workspace.asRelativePath(f, false))),
+				at: now,
+			};
+		}
+		return this.scopeCache.paths.has(relative);
+	}
+
+	/** Writes the index back once the edits stop arriving. */
+	private schedulePersist(): void {
+		if (this.persistTimer) {
+			clearTimeout(this.persistTimer);
+		}
+		this.persistTimer = setTimeout(() => {
+			this.persistTimer = undefined;
+			void this.save().catch(error => log.warn('Could not persist the semantic index', error));
+		}, PERSIST_IDLE_MS);
+	}
+
+	/**
+	 * Re-embeds a single file in place.
+	 *
+	 * Deliberately a no-op when no index exists: building one as a side effect of a save would
+	 * turn Ctrl+S into minutes of CPU that nobody asked for, and indexing stays an explicit act.
+	 */
+	async updateFile(uri: vscode.Uri, settings: AISettings): Promise<'updated' | 'skipped'> {
+		await this.load();
+		if (this.chunks.length === 0 || this.building) {
+			return 'skipped';
+		}
+		if (!(await this.isInScope(uri, settings))) {
+			return 'skipped';
+		}
+
+		const relative = vscode.workspace.asRelativePath(uri, false);
+
+		let stat: vscode.FileStat;
+		let content: string;
+		try {
+			stat = await vscode.workspace.fs.stat(uri);
+			if (stat.size > MAX_FILE_BYTES || stat.size === 0) {
+				return 'skipped';
+			}
+			content = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+		} catch {
+			// Vanished between the save event and here; the delete handler owns that case.
+			return 'skipped';
+		}
+		if (content.includes('\0')) {
+			return 'skipped';
+		}
+
+		const client = createEmbeddingClient(settings);
+		if (this.model && this.model !== client.model) {
+			// A vector from another model is not comparable, so quietly patching one in would
+			// corrupt the ranking rather than fail. Leave it for a rebuild.
+			return 'skipped';
+		}
+
+		const chunks = chunkFile(relative, content);
+		const embedded: IndexedChunk[] = [];
+		const controller = new AbortController();
+		for (let start = 0; start < chunks.length; start += EMBED_BATCH) {
+			const batch = chunks.slice(start, start + EMBED_BATCH);
+			const vectors = await client.embed(batch.map(chunk => chunk.text), controller.signal);
+			batch.forEach((chunk, i) => embedded.push({ ...chunk, vector: vectors[i] }));
+		}
+
+		this.chunks = this.chunks.filter(chunk => chunk.relativePath !== relative).concat(embedded);
+		this.files[relative] = { size: stat.size, mtime: stat.mtime };
+		this.schedulePersist();
+		log.info(`Semantic index: re-embedded ${relative} (${embedded.length} chunks)`);
+		return 'updated';
+	}
+
+	/** Drops a file's chunks. Used for deletes and for the old path of a rename. */
+	removeFile(uri: vscode.Uri): boolean {
+		const relative = vscode.workspace.asRelativePath(uri, false);
+		if (!this.files[relative]) {
+			return false;
+		}
+		this.chunks = this.chunks.filter(chunk => chunk.relativePath !== relative);
+		delete this.files[relative];
+		this.scopeCache = undefined;
+		this.schedulePersist();
+		log.info(`Semantic index: dropped ${relative}`);
+		return true;
+	}
+
+	/** Flushes a pending write. Called on shutdown so a late edit is not lost. */
+	async flush(): Promise<void> {
+		if (this.persistTimer) {
+			clearTimeout(this.persistTimer);
+			this.persistTimer = undefined;
+			await this.save().catch(error => log.warn('Could not flush the semantic index', error));
+		}
 	}
 
 	/* ---------------------------------------------------------------- search */
@@ -395,6 +570,117 @@ export class SemanticIndex {
 		}
 		return spread;
 	}
+}
+
+/**
+ * Keeps the index true between full builds.
+ *
+ * Saves are coalesced per file: a formatter that saves three times in a second should cost one
+ * re-embed, not three. Failures are logged and swallowed - an index that has drifted slightly is
+ * a worse search result, while an error toast on every Ctrl+S is a broken editor.
+ */
+export function registerIncrementalIndexing(index: SemanticIndex): vscode.Disposable {
+	const pending = new Map<string, ReturnType<typeof setTimeout>>();
+	const DEBOUNCE_MS = 700;
+
+	/**
+	 * A `git checkout` across a branch rewrites hundreds of files at once. Re-embedding all of
+	 * them would pin the CPU for minutes in the background, which is worse than a stale index -
+	 * the user did not ask for it and cannot see why the machine is busy. Past this many files
+	 * in one window, give up on patching and say a rebuild is needed.
+	 */
+	const BURST_LIMIT = 40;
+	const BURST_WINDOW_MS = 5000;
+	let burstCount = 0;
+	let burstStartedAt = 0;
+	let burstWarned = false;
+
+	const overBurstLimit = (): boolean => {
+		const now = Date.now();
+		if (now - burstStartedAt > BURST_WINDOW_MS) {
+			burstStartedAt = now;
+			burstCount = 0;
+			burstWarned = false;
+		}
+		burstCount++;
+		if (burstCount <= BURST_LIMIT) {
+			return false;
+		}
+		if (!burstWarned) {
+			burstWarned = true;
+			log.warn(
+				`Semantic index: more than ${BURST_LIMIT} files changed at once (a branch switch?). `
+				+ 'Skipping incremental updates for this batch - run "PSCode: Build Semantic Index" to catch up.'
+			);
+			for (const timer of pending.values()) {
+				clearTimeout(timer);
+			}
+			pending.clear();
+			index.markStaleBatch();
+		}
+		return true;
+	};
+
+	const queue = (uri: vscode.Uri) => {
+		if (uri.scheme !== 'file' || !readSettings().semanticAutoUpdate) {
+			return;
+		}
+		if (overBurstLimit()) {
+			return;
+		}
+		const key = uri.toString();
+		const existing = pending.get(key);
+		if (existing) {
+			clearTimeout(existing);
+		}
+		pending.set(key, setTimeout(() => {
+			pending.delete(key);
+			void index.updateFile(uri, readSettings())
+				.catch(error => log.warn(`Semantic index: could not update ${uri.fsPath}`, error));
+		}, DEBOUNCE_MS));
+	};
+
+	// Watching the filesystem as well as the editor is the point: the changes that make an index
+	// most wrong are the ones no editor saw - a branch switch, a pull, a generator, another tool.
+	// `updateFile` re-checks scope, so events for excluded paths cost a set lookup and nothing more.
+	const watcher = vscode.workspace.createFileSystemWatcher(readSettings().semanticInclude);
+
+	const subscriptions: vscode.Disposable[] = [
+		watcher,
+		watcher.onDidChange(queue),
+		watcher.onDidCreate(queue),
+		watcher.onDidDelete(uri => index.removeFile(uri)),
+
+		// The document event still earns its place: it fires before the watcher and coalesces a
+		// formatter's repeated saves, so the common case stays one re-embed.
+		vscode.workspace.onDidSaveTextDocument(document => queue(document.uri)),
+
+		vscode.workspace.onDidDeleteFiles(event => {
+			for (const uri of event.files) {
+				index.removeFile(uri);
+			}
+		}),
+
+		vscode.workspace.onDidRenameFiles(event => {
+			for (const { oldUri, newUri } of event.files) {
+				index.removeFile(oldUri);
+				queue(newUri);
+			}
+		}),
+	];
+
+	return {
+		dispose() {
+			for (const timer of pending.values()) {
+				clearTimeout(timer);
+			}
+			pending.clear();
+			for (const subscription of subscriptions) {
+				subscription.dispose();
+			}
+			void index.flush();
+		},
+	};
 }
 
 /** Created once in `activate` and shared by the chat context builder and the agent tool. */

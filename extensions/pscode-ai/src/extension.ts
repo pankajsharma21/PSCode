@@ -10,7 +10,7 @@ import { EXPLAIN_PROMPT } from './agent/prompts';
 import { ChatViewProvider } from './chat/chatViewProvider';
 import { ChatHistory } from './chat/history';
 import { registerProjectRulesWatcher } from './context/projectRules';
-import { initSemanticIndex } from './context/semanticIndex';
+import { initSemanticIndex, registerIncrementalIndexing } from './context/semanticIndex';
 import { acceptPendingEdit, discardPendingEdit, reportProviderError, runInlineEdit } from './inline/inlineEdit';
 import { registerProposalProvider } from './inline/proposalDocuments';
 import { createProvider, readSettings } from './providers/registry';
@@ -31,6 +31,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		statusBar,
 		registerProposalProvider(),
 		registerProjectRulesWatcher(),
+		registerIncrementalIndexing(index),
 
 		vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chat, {
 			// Keeps the transcript alive when the user switches to another side-bar view.

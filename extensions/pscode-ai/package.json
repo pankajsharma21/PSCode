@@ -272,6 +272,11 @@
           "type": "number",
           "default": 6,
           "description": "How many semantic matches to send to the model. Each one costs context budget."
+        },
+        "pscode.ai.semanticAutoUpdate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Re-embed a file when you save it, so @codebase stays current between full index builds. Only ever updates an index that already exists - it never starts one for you."
         }
       }
     },
