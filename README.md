@@ -251,10 +251,25 @@ Any tool-capable model works. `qwen2.5:7b` and `llama3.2` are both good starting
 mode needs tool calling, so a model without it will only work in Chat mode. PSCode talks to
 `http://127.0.0.1:11434` by default and the status bar turns red if nothing answers there.
 
+### 2. Download the installer
+
+Both installers are attached to the [latest release][releases]. **The repository is private, so a
+plain `wget` of an asset URL will not work** — use the authenticated GitHub CLI:
+
+```bash
+gh release download --repo pankajsharma21/PSCode --pattern 'pscode_*_amd64.deb'   # or
+gh release download --repo pankajsharma21/PSCode --pattern 'PSCode-linux-x64-*.tar.gz'
+```
+
+The `.deb` revision carries a build timestamp, so the globs above are deliberate — they save you
+copying an exact filename.
+
+[releases]: https://github.com/pankajsharma21/PSCode/releases/latest
+
 ### 2a. Debian / Ubuntu — the `.deb`
 
 ```bash
-sudo apt install ./pscode_<version>_amd64.deb
+sudo apt install ./pscode_*_amd64.deb
 ```
 
 `apt` pulls in the dependencies; `dpkg -i` alone will not. That gives you the same things the
@@ -281,16 +296,32 @@ ln -sf ~/.local/opt/PSCode-linux-x64/bin/pscode ~/.local/bin/pscode
 ```
 
 Make sure `~/.local/bin` is on your `PATH`. Nothing is written outside your home directory, and
-you can delete the folder to uninstall. To get a menu entry as well:
+you can delete the folder to uninstall. The tarball ships no desktop entry, so write one if you
+want a menu icon:
 
 ```bash
-sed -e "s|/usr/share/pscode/pscode|$HOME/.local/opt/PSCode-linux-x64/pscode|" \
-    -e "s|Icon=pscode|Icon=$HOME/.local/opt/PSCode-linux-x64/resources/app/resources/linux/code.png|" \
-    resources/linux/code.desktop > ~/.local/share/applications/pscode.desktop
+APP=$HOME/.local/opt/PSCode-linux-x64
+cat > ~/.local/share/applications/pscode.desktop <<EOF
+[Desktop Entry]
+Name=PSCode
+Comment=Code editing with a local AI agent.
+GenericName=Text Editor
+Exec=$APP/pscode %F
+Icon=$APP/resources/app/resources/linux/code.png
+Type=Application
+StartupNotify=false
+StartupWMClass=pscode
+Categories=TextEditor;Development;IDE;
+Keywords=pscode;vscode;ai;agent;
+EOF
 update-desktop-database ~/.local/share/applications
 ```
 
-### 2c. Build it yourself
+`StartupWMClass` must be **`pscode`** — that is the window's actual `WM_CLASS` (check it with
+`xprop WM_CLASS`). Get it wrong and the desktop environment cannot match the window to the
+launcher, so the taskbar shows a generic or borrowed icon.
+
+### 2c. Or build it yourself — no download needed
 
 ```bash
 # Build prerequisites
@@ -319,9 +350,10 @@ npm run gulp vscode-linux-x64-min            # production bundle → ../VSCode-l
 npm run gulp vscode-linux-x64-prepare-deb    # stage the package tree
 npm run gulp vscode-linux-x64-build-deb      # → .build/linux/deb/amd64/deb/*.deb
 
-# the tarball is just the built tree
+# the tarball is just the built tree, renamed on the way in: the gulp task hardcodes
+# ../VSCode-linux-x64, but the install paths above expect PSCode-linux-x64
 tar -czf PSCode-linux-x64-$(node -p "require('./package.json').version").tar.gz \
-    -C .. VSCode-linux-x64
+    -C .. --transform 's,^VSCode-linux-x64,PSCode-linux-x64,' VSCode-linux-x64
 ```
 
 `prepare-deb` downloads a Chromium sysroot and runs `dpkg-shlibdeps` to compute the `Depends:`
@@ -519,7 +551,7 @@ Being precise about this matters more than the line count.
 | Shell | `extension.ts`, `statusBar.ts`, `util/{logger,cancellation}.ts` |
 | Test | `test/{provider-smoke,embedding-smoke}.js` |
 
-**Upstream files I modified — 26, plus 2 deleted,** on top of removing the bundled Copilot
+**Upstream files I modified — 27, plus 2 deleted,** on top of removing the bundled Copilot
 extension. That count is not a claim you have to take on trust:
 
 ```bash
@@ -541,6 +573,7 @@ The interesting ones:
 | `src/vs/base/common/product.ts` | Declare the `disableCloudChat` flag |
 | `src/vs/workbench/services/chat/common/chatEntitlementService.ts` | Honour it — and refuse to let anything un-hide it (see below) |
 | `resources/linux/debian/*` | Rebrand the package, and **delete the Microsoft apt-repo registration** |
+| `build/linux/debian/calculate-deps.ts` | Fetch `dpkg-shlibdeps.pl` once instead of once per binary — a repeat fetch that hung stalled the whole package step silently |
 | `resources/linux/code.appdata.xml` | PSCode's own AppStream metadata |
 | `build/gulpfile.vscode.ts` | Skip the Copilot ripgrep shim, which has nothing to shim here |
 | `build/linux/dependencies-generator.ts` | Skip the tunnel binary this fork does not build |

@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { spawnSync } from 'child_process';
-import { constants, statSync } from 'fs';
+import { constants, existsSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import manifests from '../../../cgmanifest.json' with { type: 'json' };
@@ -35,9 +35,18 @@ function calculatePackageDeps(binaryPath: string, arch: DebianArchString, chromi
 	});
 	const dpkgShlibdepsUrl = `https://raw.githubusercontent.com/chromium/chromium/${chromiumManifest[0].version}/third_party/dpkg-shlibdeps/dpkg-shlibdeps.pl`;
 	const dpkgShlibdepsScriptLocation = `${tmpdir()}/dpkg-shlibdeps.pl`;
-	const result = spawnSync('curl', [dpkgShlibdepsUrl, '-o', dpkgShlibdepsScriptLocation]);
-	if (result.status !== 0) {
-		throw new Error('Cannot retrieve dpkg-shlibdeps. Stderr:\n' + result.stderr);
+	// This function runs once per shipped binary, and upstream re-downloads the same helper
+	// script every time. On a slow or proxied link that is dozens of identical 32KB requests,
+	// and one of them hanging stalls the whole package step with no output at all - the curl
+	// child sits in poll() forever while the file it was fetching is already complete on disk.
+	// Fetch it once, reuse it, and let curl fail loudly instead of quietly: -f turns an HTTP
+	// error into a non-zero exit, -sS drops the progress meter but keeps real errors, -L
+	// follows redirects, and --max-time bounds the hang rather than inheriting it.
+	if (!existsSync(dpkgShlibdepsScriptLocation) || statSync(dpkgShlibdepsScriptLocation).size === 0) {
+		const result = spawnSync('curl', ['-fsSL', '--max-time', '120', dpkgShlibdepsUrl, '-o', dpkgShlibdepsScriptLocation]);
+		if (result.status !== 0) {
+			throw new Error('Cannot retrieve dpkg-shlibdeps. Stderr:\n' + result.stderr);
+		}
 	}
 	const cmd = [dpkgShlibdepsScriptLocation, '--ignore-weak-undefined', '--ignore-missing-info'];
 	switch (arch) {
