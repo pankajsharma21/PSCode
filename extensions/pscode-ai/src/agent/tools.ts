@@ -12,7 +12,7 @@ import { exec } from 'child_process';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { relativePath } from '../context/contextBuilder';
-import { PROPOSAL_SCHEME, setProposal } from '../inline/proposalDocuments';
+import { showProposedDiff } from '../inline/proposalDocuments';
 import { ApprovalHandler, nextApprovalId } from './approvals';
 import { AISettings } from '../providers/registry';
 import { ToolSchema } from '../providers/types';
@@ -630,20 +630,6 @@ function runShell(
 		});
 		child.on('exit', () => subscription.dispose());
 	});
-}
-
-/** Opens a read-only side-by-side diff of the proposal against what is on disk. */
-async function showProposedDiff(uri: vscode.Uri, proposed: string, existed: boolean): Promise<void> {
-	const proposalUri = vscode.Uri.parse(`${PROPOSAL_SCHEME}:${uri.path}?agent`);
-	setProposal(proposalUri, proposed);
-	await vscode.commands.executeCommand(
-		'vscode.diff',
-		existed ? uri : vscode.Uri.parse(`${PROPOSAL_SCHEME}:/empty?blank`),
-		proposalUri,
-		`PSCode AI proposal: ${path.basename(uri.fsPath)}`,
-		// preserveFocus keeps the caret in the chat panel, so Accept/Reject stays one click away.
-		{ preview: true, preserveFocus: true, viewColumn: vscode.ViewColumn.Beside }
-	);
 }
 
 export const ALL_TOOLS: AgentTool[] = [

@@ -8,10 +8,11 @@
 
 import * as vscode from 'vscode';
 import { runAgent } from '../agent/agentLoop';
-import { ApprovalRegistry, ApprovalRequest } from '../agent/approvals';
+import { ApprovalRegistry, ApprovalRequest, nextApprovalId } from '../agent/approvals';
 import { CHAT_SYSTEM_PROMPT } from '../agent/prompts';
 import { buildContext } from '../context/contextBuilder';
 import { reportProviderError } from '../inline/inlineEdit';
+import { showProposedDiff } from '../inline/proposalDocuments';
 import { AISettings, createProvider, readSettings } from '../providers/registry';
 import { ChatMessage, ProviderError } from '../providers/types';
 import { toAbortSignal } from '../util/cancellation';
@@ -37,6 +38,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	private conversation: ChatMessage[] = [];
 	private inflight: vscode.CancellationTokenSource | undefined;
 	private readonly approvals = new ApprovalRegistry();
+	/**
+	 * Apply reviews live outside the agent turn. Keeping them in `approvals` meant the turn's
+	 * cleanup declined a card the user was still reading, so their Accept landed on an already
+	 * resolved promise and the edit vanished without a word.
+	 */
+	private readonly applyApprovals = new ApprovalRegistry();
 
 	constructor(private readonly extensionUri: vscode.Uri) { }
 
@@ -59,6 +66,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			this.inflight?.cancel();
 			// A pending approval whose UI just disappeared must decline, not hang the agent.
 			this.approvals.declineAll();
+			this.applyApprovals.declineAll();
 			this.view = undefined;
 		});
 	}
@@ -79,8 +87,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				break;
 			case 'approvalResponse':
 				if (message.id) {
-					const known = this.approvals.resolve(message.id, message.approved === true);
-					log.info(`[approval] webview replied id=${message.id} approved=${message.approved === true} matched=${known}`);
+					const approved = message.approved === true;
+					const known = this.approvals.resolve(message.id, approved)
+						|| this.applyApprovals.resolve(message.id, approved);
+					log.info(`[approval] webview replied id=${message.id} approved=${approved} matched=${known}`);
 				}
 				break;
 			case 'revealDiff':
@@ -119,12 +129,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	 * Posts an approval card into the transcript and waits for the click. Nothing else can
 	 * satisfy it: the webview must echo back this exact request id.
 	 */
-	private requestApproval(request: ApprovalRequest): Promise<boolean> {
+	private requestApproval(request: ApprovalRequest, registry: ApprovalRegistry = this.approvals): Promise<boolean> {
 		if (!this.view) {
 			return Promise.resolve(false);
 		}
 		log.info(`[approval] requested id=${request.id} kind=${request.kind} title=${request.title}`);
-		const answer = this.approvals.create(request.id);
+		const answer = registry.create(request.id);
 		this.post({ type: 'approvalRequest', ...request });
 		return answer.then(approved => {
 			log.info(`[approval] settled id=${request.id} approved=${approved}`);
@@ -299,20 +309,75 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 	/* -------------------------------------------------------------- utilities */
 
+	/**
+	 * Applies a fenced block from a chat reply to the active editor - but never blind.
+	 * Chat mode has no tools, so this button used to be the one place PSCode changed a file
+	 * without showing a diff or asking; it spliced the block in at the cursor, which turned a
+	 * model that reprinted a whole file into a duplicated file. Now it proposes, diffs, and
+	 * waits for Accept, exactly like agent mode.
+	 *
+	 * What the block means depends on the selection, because that is the only signal available:
+	 *   - selection active -> the block replaces the selection
+	 *   - no selection     -> the block is the file's new contents
+	 * A wrong guess is now harmless: it shows up in the diff and the user rejects it.
+	 */
 	private async applyToEditor(code: string): Promise<void> {
 		const editor = vscode.window.activeTextEditor;
 		if (!editor) {
 			void vscode.window.showInformationMessage('Open a file to apply this code into.');
 			return;
 		}
-		const target = editor.selection.isEmpty
-			? new vscode.Range(editor.selection.active, editor.selection.active)
-			: editor.selection;
 
-		await editor.edit(builder => builder.replace(target, code));
-		void vscode.window.showInformationMessage(
-			editor.selection.isEmpty ? 'Inserted at the cursor.' : 'Replaced the selection.'
+		const document = editor.document;
+		const selection = editor.selection;
+		const replacesSelection = !selection.isEmpty;
+		const original = document.getText();
+
+		const target = replacesSelection ? selection : new vscode.Range(
+			document.positionAt(0),
+			document.positionAt(original.length)
 		);
+		const proposed = replacesSelection
+			? original.slice(0, document.offsetAt(selection.start)) + code + original.slice(document.offsetAt(selection.end))
+			: code;
+
+		if (proposed === original) {
+			void vscode.window.showInformationMessage('That block is already what the file contains.');
+			return;
+		}
+
+		const relative = vscode.workspace.asRelativePath(document.uri, false);
+		await showProposedDiff(document.uri, proposed, true, 'apply');
+
+		const before = original.split('\n').length;
+		const after = proposed.split('\n').length;
+		const approved = await this.requestApproval({
+			id: nextApprovalId(),
+			kind: replacesSelection ? 'edit' : 'overwrite',
+			title: `${replacesSelection ? 'Replace selection in' : 'Rewrite'} ${relative}`,
+			detail: replacesSelection
+				? `lines ${selection.start.line + 1}-${selection.end.line + 1}`
+				: `${before} lines to ${after}`,
+			filePath: relative,
+			hasDiff: true,
+		}, this.applyApprovals);
+
+		if (!approved) {
+			return;
+		}
+
+		// Reviewing takes as long as it takes, and the file is editable throughout. Applying a
+		// range computed against text that has since changed would corrupt it silently.
+		if (document.getText() !== original) {
+			void vscode.window.showWarningMessage(
+				`${relative} changed while you were reviewing, so nothing was applied. Ask again for a fresh proposal.`
+			);
+			return;
+		}
+
+		// Applied through the editor rather than the filesystem so it lands on the undo stack
+		// and stays unsaved, leaving the user one Ctrl+Z from where they were.
+		await editor.edit(builder => builder.replace(target, code));
 	}
 
 	private reportError(error: unknown): void {
