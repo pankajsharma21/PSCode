@@ -323,6 +323,9 @@ gh release download --repo pankajsharma21/PSCode --pattern 'pscode_*_amd64.deb' 
 gh release download --repo pankajsharma21/PSCode --pattern 'PSCode-linux-x64-*.tar.gz'
 ```
 
+Without a tag `gh` takes the latest release, which is what you want. Pass one (`gh release
+download v1.136.0-2 …`) only to pin an older build.
+
 The `.deb` revision carries a build timestamp, so the globs above are deliberate — they save you
 copying an exact filename.
 
