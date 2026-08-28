@@ -177,6 +177,38 @@ The loop is bounded by `pscode.agent.maxIterations` (default 12). When it hits t
 **says so in the transcript** instead of stopping quietly — a silent stop is indistinguishable
 from a finished task, which is how agents end up appearing to lie about their work.
 
+### Two modes, and you can always tell which one you are in
+**Chat** answers. **Agent** does the work. The difference is not a prompt — in Chat mode the model
+is sent no tools at all, so it has no mechanism to touch your workspace:
+
+```ts
+runChatTurn  → provider.stream({ messages, temperature, maxTokens })
+runAgentTurn → runAgent(…) → provider.stream({ messages, tools: ALL_TOOLS, … })
+```
+
+| | Chat | Agent |
+|---|---|---|
+| Tools | none | all eleven |
+| Requests | one | a loop, up to `agent.maxIterations` |
+| Can change files | no | yes, each behind Accept / Reject |
+| Checkpoint | — | one per run |
+
+That split is deliberate rather than a missing feature. Running the agent loop for every question
+would cost minutes on a CPU: a 7B model handed tools will call `project_map` and `read_file` before
+answering "what does this function do?", which one request answers in seconds.
+
+The cost of two modes is forgetting which one you are in — and the fix is not the toggle in the
+corner, because the only other signal used to be the composer placeholder, which vanishes as soon
+as you type. So the mode is stated permanently above the composer and on the button itself:
+
+```
+CHAT — answers only, cannot edit files          AGENT — reads and edits files, always asks first
+┌──────────────────────────────┐                ┌──────────────────────────────┐
+│ fix the tax rounding bug     │                │ fix the tax rounding bug     │
+└──────────────────────────────┘                └──────────────────────────────┘
+[ Send ]                                        [ Run task ]
+```
+
 ### Checkpoints — undo a whole agent turn
 Approving each edit protects each change in isolation. It does not protect you from five
 individually-plausible edits that together do the wrong thing, and reviewing five diffs carefully

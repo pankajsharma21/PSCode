@@ -78,6 +78,40 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 	check(await panel.eval('return document.querySelector(".mode.active")?.dataset.mode === "chat"'),
 		'reset to Chat mode before starting');
 
+	/*
+	 * The mode indicator is the fix for the one recurring confusion in this UI - after typing a
+	 * character, it used to be the case that nothing on screen said whether Send would answer a
+	 * question or edit your files. Assert it here so a future change cannot quietly remove it.
+	 */
+	const chatMode = JSON.parse(await panel.eval(`
+	  document.getElementById('composer').value = 'fix the tax rounding bug';
+	  return JSON.stringify({
+	    hint: document.getElementById('mode-hint').innerText,
+	    send: document.getElementById('send').textContent,
+	  });
+	`));
+	check(/CHAT/.test(chatMode.hint) && /cannot edit/i.test(chatMode.hint),
+		'Chat mode says it cannot edit, with text typed', chatMode.hint);
+	check(chatMode.send === 'Send', 'Chat mode button reads "Send"', chatMode.send);
+
+	const agentMode = JSON.parse(await panel.eval(`
+	  document.querySelector('.mode[data-mode="agent"]').click();
+	  return JSON.stringify({
+	    hint: document.getElementById('mode-hint').innerText,
+	    send: document.getElementById('send').textContent,
+	  });
+	`));
+	check(/AGENT/.test(agentMode.hint) && /edits files/i.test(agentMode.hint),
+		'Agent mode says it edits files', agentMode.hint);
+	check(agentMode.send === 'Run task', 'Agent mode button reads "Run task"', agentMode.send);
+
+	await panel.eval(`
+	  document.querySelector('.mode[data-mode="chat"]').click();
+	  document.getElementById('composer').value = '';
+	  return true;
+	`);
+	await sleep(400);
+
 	/* ---- the strip is invisible while idle ---- */
 	let strip = JSON.parse(await panel.eval(readStrip));
 	check(strip.hidden === true, 'strip is hidden when nothing is happening', JSON.stringify(strip));

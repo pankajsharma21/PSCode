@@ -28,6 +28,9 @@
 	const activity = document.getElementById('activity');
 	const activityLabel = document.getElementById('activity-label');
 	const activityMeta = document.getElementById('activity-meta');
+	const modeHint = document.getElementById('mode-hint');
+	const modeHintName = document.getElementById('mode-hint-name');
+	const modeHintText = document.getElementById('mode-hint-text');
 
 	let mode = 'chat';
 	/** Live activity state. The clock ticks here so the extension only posts phase changes. */
@@ -396,6 +399,32 @@
 		}
 	}
 
+	/*
+	 * Which mode is active, stated where the eye already is and in a place that cannot vanish.
+	 *
+	 * The pill in the header and the composer placeholder were the only signals, and the
+	 * placeholder disappears the moment you type - so after typing a single character there was
+	 * nothing on screen saying whether pressing Send would answer a question or edit your files.
+	 * That is the whole reason "it found the bug but never offered to change anything" was a
+	 * recurring surprise: the mode was right there in the corner, and invisible.
+	 */
+	function paintMode() {
+		const agent = mode === 'agent';
+		modeHint.dataset.mode = mode;
+		modeHintName.textContent = agent ? 'AGENT' : 'CHAT';
+		// Kept short enough to survive a narrow side bar without ellipsis. The full sentence is
+		// on the title attribute, and the half that must never be truncated - what it can do to
+		// your files - comes first.
+		modeHintText.textContent = agent
+			? ' — reads and edits files, always asks first'
+			: ' — answers only, cannot edit files';
+		modeHint.title = agent
+			? 'Agent mode: PSCode AI can read, search and edit files, and run commands. Every change is shown as a diff with Accept/Reject first, and the whole run can be undone from its checkpoint.'
+			: 'Chat mode: PSCode AI can only answer. It has no tools and cannot touch your workspace. Use Apply on a code block to review a change as a diff.';
+		// The verb on the button is the last thing read before committing to an action.
+		sendButton.textContent = agent ? 'Run task' : 'Send';
+	}
+
 	/* -------------------------------------------------------------- activity */
 
 	/*
@@ -523,6 +552,7 @@
 			composer.placeholder = mode === 'agent'
 				? 'Describe a task — PSCode AI will read and edit files…'
 				: 'Ask about your code…  (Enter to send, Shift+Enter for a new line)';
+			paintMode();
 		});
 	}
 
@@ -743,6 +773,7 @@
 		}
 	});
 
+	paintMode();
 	vscode.postMessage({ type: 'ready' });
 	composer.focus();
 })();

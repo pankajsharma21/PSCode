@@ -663,3 +663,33 @@ footer {
 @media (prefers-reduced-motion: reduce) {
 	.activity-dots i { animation: none; opacity: 0.8; }
 }
+
+/* --------------------------------------------------------------- mode hint */
+
+/*
+ * Sits between the activity strip and the composer, and is never hidden. Agent gets the warmer
+ * colour because it is the mode that can change your files; Chat stays deliberately quiet. The
+ * point is not decoration - it is that after typing a character, this is the only thing left on
+ * screen that says what pressing the button will do.
+ */
+#mode-hint {
+	font-size: 10px;
+	letter-spacing: 0.04em;
+	padding: 0 2px 4px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+#mode-hint-name {
+	font-weight: 600;
+}
+
+#mode-hint[data-mode="chat"] #mode-hint-name {
+	color: var(--vscode-descriptionForeground);
+}
+
+#mode-hint[data-mode="agent"] #mode-hint-name {
+	color: var(--vscode-charts-orange, var(--vscode-notificationsWarningIcon-foreground));
+}

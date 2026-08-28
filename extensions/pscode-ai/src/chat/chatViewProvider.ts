@@ -734,6 +734,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			<span id="activity-label"></span>
 			<span id="activity-meta"></span>
 		</div>
+		<div id="mode-hint"><strong id="mode-hint-name"></strong><span id="mode-hint-text"></span></div>
 		<textarea id="composer" rows="3" placeholder="Ask about your code…  (Enter to send, Shift+Enter for a new line)"></textarea>
 		<div class="actions">
 			<button id="send" class="primary">Send</button>
