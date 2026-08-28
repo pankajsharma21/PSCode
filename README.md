@@ -31,6 +31,13 @@ Accept in the editor title bar.
 
 ![PSCode AI inline edit shown as a diff](docs/images/inline-edit.png)
 
+**Agent mode, waiting for permission** — the proposal is open as a real side-by-side diff and the
+Accept / Reject card is in the panel, not in a modal. Nothing has been written yet. The amber line
+above the composer is the activity strip: `Waiting for you to accept or reject · 9s`, so it is
+always clear whether PSCode is working or waiting on you.
+
+![An agent edit waiting for approval, shown as a diff with an Accept/Reject card](docs/images/agent-approval.png)
+
 All of it running against `qwen2.5:7b` on localhost, on a CPU, with no network access.
 
 ---
@@ -132,6 +139,23 @@ find_usages("discountFor")
 
 The agent prompt tells it to do this discovery for every affected file *before* editing any of them,
 so it does not edit a file and then find a caller it had not read.
+
+**An edit that breaks the build says so immediately.** `replace_in_file` and `write_file` snapshot
+the file's errors before the change and report any *new* ones as part of their own result:
+
+```
+✓ replace_in_file: Replaced the snippet in src/math.ts at line 2.
+
+  This edit introduced 1 new error(s) in src/math.ts:
+    line 2: Type 'string' is not assignable to type 'number'.
+  Fix them now, in this same turn, before doing anything else.
+```
+
+The prompt already tells the model to run `get_diagnostics` after editing, and a 7B model often
+does not — it declares the job done and stops. Folding the check into the edit result puts the
+answer in the one message the model is guaranteed to read, and in practice it then fixes the
+mistake in the same turn instead of leaving you a broken file and a confident summary. Only errors
+count, and only ones this edit introduced, so pre-existing breakage is never blamed on the change.
 
 Nothing is written without your click. When the agent wants to change a file, PSCode opens a
 **side-by-side diff** beside your code and puts an **Accept / Reject** card in the chat panel:

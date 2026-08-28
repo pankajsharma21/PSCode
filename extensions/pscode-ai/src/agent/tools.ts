@@ -438,10 +438,15 @@ const writeFile: AgentTool = {
 
 		// Captured after approval and before the write: this is the state Restore returns to.
 		await context.checkpoint?.capture(uri);
+		const errorsBefore = errorSignature(uri);
 
 		await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
 		context.report(`${existed ? 'Updated' : 'Created'} ${relativePath(uri)} (${content.split('\n').length} lines)`);
-		return { ok: true, content: `Wrote ${relativePath(uri)}.` };
+		const broke = await describeNewErrors(uri, errorsBefore);
+		if (broke) {
+			context.report(`${relativePath(uri)} now has new errors`);
+		}
+		return { ok: true, content: `Wrote ${relativePath(uri)}.${broke}` };
 	},
 };
 
@@ -503,6 +508,7 @@ const replaceInFile: AgentTool = {
 		}
 
 		await context.checkpoint?.capture(uri);
+		const errorsBefore = errorSignature(uri);
 
 		const edit = new vscode.WorkspaceEdit();
 		edit.replace(uri, new vscode.Range(document.positionAt(first), document.positionAt(first + find.length)), replacement);
@@ -514,9 +520,72 @@ const replaceInFile: AgentTool = {
 
 		const line = document.positionAt(first).line + 1;
 		context.report(`Edited ${relativePath(uri)} at line ${line}`);
-		return { ok: true, content: `Replaced the snippet in ${relativePath(uri)} at line ${line}.` };
+		const broke = await describeNewErrors(uri, errorsBefore);
+		if (broke) {
+			context.report(`${relativePath(uri)} now has new errors`);
+		}
+		return { ok: true, content: `Replaced the snippet in ${relativePath(uri)} at line ${line}.${broke}` };
 	},
 };
+
+/** Errors only. A warning that was already there is noise the model does not need. */
+function errorSignature(uri: vscode.Uri): Set<string> {
+	return new Set(
+		vscode.languages.getDiagnostics(uri)
+			.filter(d => d.severity === vscode.DiagnosticSeverity.Error)
+			.map(d => `${d.range.start.line}:${d.message.replace(/\s+/g, ' ')}`)
+	);
+}
+
+/**
+ * Reports errors an edit introduced, as part of the edit's own result.
+ *
+ * The agent prompt already tells the model to call get_diagnostics afterwards, and a 7B model
+ * often does not - it says the change is done and stops. By the time anyone notices, the run is
+ * over. Folding the answer into the edit result means the model is told immediately, in the one
+ * message it is guaranteed to read, and can fix it in the same turn.
+ *
+ * Errors are diffed against a snapshot taken before the edit, so pre-existing breakage is not
+ * blamed on this change. Bounded by a short deadline: language servers are asynchronous, and an
+ * agent that stalls waiting for one is worse than one that reports nothing.
+ */
+async function describeNewErrors(uri: vscode.Uri, before: Set<string>): Promise<string> {
+	const DEADLINE_MS = 4000;
+	const QUIET_MS = 600;
+
+	await new Promise<void>(resolve => {
+		let quiet: ReturnType<typeof setTimeout> | undefined;
+		const finish = () => {
+			clearTimeout(deadline);
+			if (quiet) { clearTimeout(quiet); }
+			subscription.dispose();
+			resolve();
+		};
+		// Settle on a quiet period after the last change for this file, so a server that
+		// publishes in two bursts is not read halfway through.
+		const subscription = vscode.languages.onDidChangeDiagnostics(event => {
+			if (!event.uris.some(changed => changed.toString() === uri.toString())) {
+				return;
+			}
+			if (quiet) { clearTimeout(quiet); }
+			quiet = setTimeout(finish, QUIET_MS);
+		});
+		const deadline = setTimeout(finish, DEADLINE_MS);
+	});
+
+	const introduced = [...errorSignature(uri)].filter(signature => !before.has(signature));
+	if (introduced.length === 0) {
+		return '';
+	}
+
+	const shown = introduced.slice(0, 10).map(signature => {
+		const [line, ...rest] = signature.split(':');
+		return `  line ${Number(line) + 1}: ${rest.join(':')}`;
+	});
+	const more = introduced.length > shown.length ? `\n  ...and ${introduced.length - shown.length} more` : '';
+	return `\n\nThis edit introduced ${introduced.length} new error(s) in ${relativePath(uri)}:\n`
+		+ `${shown.join('\n')}${more}\nFix them now, in this same turn, before doing anything else.`;
+}
 
 const getDiagnostics: AgentTool = {
 	schema: {
