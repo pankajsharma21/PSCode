@@ -65,6 +65,19 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 	await panel.eval(INSTALL_RECORDER);
 	check(true, 'activity recorder installed');
 
+	// Start from a known state so the test can be run repeatedly against the same window: it
+	// ends in Agent mode, and a second run would otherwise open with an agent turn and never
+	// see the chat-mode phases it asserts on.
+	await panel.eval(`
+	  document.getElementById('new-chat').click();
+	  document.querySelector('.mode[data-mode="chat"]').click();
+	  return true;
+	`);
+	await sleep(1000);
+	await panel.eval(RESET_RECORDER);
+	check(await panel.eval('return document.querySelector(".mode.active")?.dataset.mode === "chat"'),
+		'reset to Chat mode before starting');
+
 	/* ---- the strip is invisible while idle ---- */
 	let strip = JSON.parse(await panel.eval(readStrip));
 	check(strip.hidden === true, 'strip is hidden when nothing is happening', JSON.stringify(strip));
@@ -126,11 +139,24 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 		'the elapsed clock ticks upward on its own', `${clock0.meta}  ->  ${clock1.meta}`);
 	check(/Waiting for a slow model/.test(clock1.label), 'the label is what was posted', clock1.label);
 
-	const writing = seen.find(s => s.phase === 'writing');
 	check(phases.includes('writing'), 'posted a "writing" phase once tokens arrived');
-	if (writing) {
-		check(/tok/.test(writing.meta), 'writing phase reports a token rate', writing.meta);
-	}
+
+	/*
+	 * The rate is rendered synthetically for the same reason as the clock: polling can catch the
+	 * writing phase in the instant before its first token message is processed, which made this
+	 * assertion flaky against a fast model. The real turn above already proves the phase fires;
+	 * this proves the strip renders a rate when told about tokens.
+	 */
+	await panel.eval(`
+	  window.postMessage({ type: 'activity', phase: 'writing', label: 'Writing' }, '*');
+	  for (let i = 1; i <= 42; i++) { window.postMessage({ type: 'tokens', tokens: i }, '*'); }
+	  return true;
+	`);
+	await sleep(1400);
+	const rate = JSON.parse(await panel.eval(readStrip));
+	await panel.eval(`window.postMessage({ type: 'activityDone' }, '*'); return true;`);
+	check(/~42 tok/.test(rate.meta), 'writing phase reports the token count', rate.meta);
+	check(/tok\/s/.test(rate.meta), 'writing phase reports a token rate', rate.meta);
 
 	/* ---- and it must clear itself when the turn is over ---- */
 	await sleep(2500);
