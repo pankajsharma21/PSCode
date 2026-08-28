@@ -31,8 +31,13 @@
 	const modeHint = document.getElementById('mode-hint');
 	const modeHintName = document.getElementById('mode-hint-name');
 	const modeHintText = document.getElementById('mode-hint-text');
+	const restricted = document.getElementById('restricted');
+	const trustButton = document.getElementById('trust-button');
+	const agentButton = document.getElementById('mode-agent');
 
 	let mode = 'chat';
+	/** Set from the status message. Agent mode is unavailable while this is false. */
+	let trusted = true;
 	/** Live activity state. The clock ticks here so the extension only posts phase changes. */
 	let activityState = null;
 	let activityTimer = null;
@@ -408,6 +413,26 @@
 	 * That is the whole reason "it found the bug but never offered to change anything" was a
 	 * recurring surprise: the mode was right there in the corner, and invisible.
 	 */
+	/*
+	 * Restricted Mode, said once and kept on screen.
+	 *
+	 * The old behaviour was that the whole panel simply did not exist in an untrusted folder -
+	 * the extension declared `untrustedWorkspaces.supported: false`, so it never activated and the
+	 * side bar showed an empty pane with nothing to click and nothing to read. Chat has no tools,
+	 * so it can run here; Agent can edit files and run commands, so it cannot. Saying which is
+	 * which, with the fix one click away, is the whole point.
+	 */
+	function paintTrust() {
+		restricted.hidden = trusted;
+		agentButton.disabled = !trusted;
+		agentButton.title = trusted
+			? ''
+			: 'Agent mode needs a trusted folder: it can edit files and run commands.';
+		if (!trusted && mode === 'agent') {
+			selectMode('chat');
+		}
+	}
+
 	function paintMode() {
 		const agent = mode === 'agent';
 		modeHint.dataset.mode = mode;
@@ -541,20 +566,27 @@
 		}
 	});
 
-	for (const button of document.querySelectorAll('.mode')) {
-		button.addEventListener('click', () => {
-			mode = button.dataset.mode;
-			for (const other of document.querySelectorAll('.mode')) {
-				const active = other === button;
-				other.classList.toggle('active', active);
-				other.setAttribute('aria-checked', String(active));
-			}
-			composer.placeholder = mode === 'agent'
-				? 'Describe a task — PSCode AI will read and edit files…'
-				: 'Ask about your code…  (Enter to send, Shift+Enter for a new line)';
-			paintMode();
-		});
+	function selectMode(next) {
+		if (next === 'agent' && !trusted) {
+			return;
+		}
+		mode = next;
+		for (const other of document.querySelectorAll('.mode')) {
+			const active = other.dataset.mode === next;
+			other.classList.toggle('active', active);
+			other.setAttribute('aria-checked', String(active));
+		}
+		composer.placeholder = next === 'agent'
+			? 'Describe a task — PSCode AI will read and edit files…'
+			: 'Ask about your code…  (Enter to send, Shift+Enter for a new line)';
+		paintMode();
 	}
+
+	for (const button of document.querySelectorAll('.mode')) {
+		button.addEventListener('click', () => selectMode(button.dataset.mode));
+	}
+
+	trustButton.addEventListener('click', () => vscode.postMessage({ type: 'manageTrust' }));
 
 	// Delegated so buttons inside streamed markdown work without rebinding on every frame.
 	transcript.addEventListener('click', event => {
@@ -605,6 +637,8 @@
 				modelLabel.textContent = `${message.model} · ${message.provider}`;
 				modelButton.title = `${message.provider} at ${message.endpoint}\nClick to change model`;
 				statusDot.className = 'dot ok';
+				trusted = message.trusted !== false;
+				paintTrust();
 				break;
 
 			case 'userMessage': {

@@ -672,6 +672,45 @@ footer {
  * point is not decoration - it is that after typing a character, this is the only thing left on
  * screen that says what pressing the button will do.
  */
+/*
+ * Restricted Mode notice. Sits above the mode line rather than in the transcript so it cannot
+ * scroll away, and uses the editor's own warning colour so it reads as a state of the workspace
+ * and not as an error the user caused.
+ */
+#restricted {
+	font-size: 10px;
+	letter-spacing: 0.04em;
+	padding: 4px 6px;
+	margin: 0 0 4px;
+	border-left: 2px solid var(--vscode-charts-orange, var(--vscode-notificationsWarningIcon-foreground));
+	background: var(--vscode-inputValidation-warningBackground, transparent);
+	color: var(--vscode-descriptionForeground);
+}
+
+#restricted strong {
+	color: var(--vscode-charts-orange, var(--vscode-notificationsWarningIcon-foreground));
+	font-weight: 600;
+}
+
+.link {
+	background: none;
+	border: none;
+	padding: 0;
+	font: inherit;
+	color: var(--vscode-textLink-foreground);
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.link:hover {
+	color: var(--vscode-textLink-activeForeground);
+}
+
+.mode:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
 #mode-hint {
 	font-size: 10px;
 	letter-spacing: 0.04em;

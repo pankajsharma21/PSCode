@@ -25,7 +25,7 @@ type Mode = 'chat' | 'agent';
 
 interface InboundMessage {
 	type: 'send' | 'cancel' | 'newChat' | 'apply' | 'copyDone' | 'pickModel' | 'openSettings'
-	| 'ready' | 'approvalResponse' | 'revealDiff'
+	| 'ready' | 'approvalResponse' | 'revealDiff' | 'manageTrust'
 	| 'listSessions' | 'loadSession' | 'deleteSession' | 'restoreCheckpoint';
 	text?: string;
 	mode?: Mode;
@@ -190,6 +190,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			case 'openSettings':
 				await vscode.commands.executeCommand('workbench.action.openSettings', 'pscode.ai');
 				break;
+			case 'manageTrust':
+				await vscode.commands.executeCommand('workbench.trust.manage');
+				break;
 			default:
 				break;
 		}
@@ -260,6 +263,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			model: settings.model,
 			endpoint: settings.endpoint,
 			agentEnabled: settings.agentEnabled,
+			trusted: vscode.workspace.isTrusted,
 		});
 	}
 
@@ -278,6 +282,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		const settings = readSettings();
 		if (mode === 'agent' && !settings.agentEnabled) {
 			this.post({ type: 'error', message: 'Agent mode is disabled in settings ("pscode.agent.enabled").' });
+			return;
+		}
+		// The webview disables the Agent button in Restricted Mode, but the webview is untrusted
+		// input: the decision that matters is this one, made next to the tools.
+		if (mode === 'agent' && !vscode.workspace.isTrusted) {
+			this.post({
+				type: 'error',
+				message: 'Agent mode needs a trusted folder - it can edit files and run commands. '
+					+ 'Chat works as normal. Trust this folder to enable it.',
+			});
 			return;
 		}
 
@@ -699,7 +713,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		<button id="history-button" class="icon" title="Recent conversations" aria-label="Recent conversations" aria-expanded="false">◴</button>
 		<div class="mode-switch" role="radiogroup" aria-label="Mode">
 			<button class="mode active" data-mode="chat" role="radio" aria-checked="true">Chat</button>
-			<button class="mode" data-mode="agent" role="radio" aria-checked="false">Agent</button>
+			<button class="mode" id="mode-agent" data-mode="agent" role="radio" aria-checked="false">Agent</button>
 		</div>
 	</header>
 
@@ -733,6 +747,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			<span class="activity-dots" aria-hidden="true"><i></i><i></i><i></i></span>
 			<span id="activity-label"></span>
 			<span id="activity-meta"></span>
+		</div>
+		<div id="restricted" hidden>
+			<strong>RESTRICTED MODE</strong><span> — chat only, this folder is not trusted. </span>
+			<button id="trust-button" class="link">Trust this folder</button>
+			<span> to enable Agent, Ctrl+I and @codebase.</span>
 		</div>
 		<div id="mode-hint"><strong id="mode-hint-name"></strong><span id="mode-hint-text"></span></div>
 		<textarea id="composer" rows="3" placeholder="Ask about your code…  (Enter to send, Shift+Enter for a new line)"></textarea>

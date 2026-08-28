@@ -481,9 +481,18 @@ From the command palette (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>):
 The status bar shows the live model and turns red when the server is unreachable — click it to
 switch models from whatever the server reports it has.
 
-**If the AI panel is missing, the folder is untrusted.** `pscode-ai` declares
-`untrustedWorkspaces.supported = false`, so in an untrusted workspace it does not load at all.
-Trust the folder, or launch with `--disable-workspace-trust`.
+**In an untrusted folder, chat works and Agent does not.** `pscode-ai` declares
+`untrustedWorkspaces.supported = "limited"`: Chat has no tools and cannot touch the workspace, so
+it answers questions in Restricted Mode, and the panel says so above the composer with a
+one-click way to trust the folder. What stays off until you trust it is everything the folder
+itself could influence — Agent mode (its `run_command` tool means opening a repo must never be
+enough to run its code), the `AGENTS.md` project rules (repo-controlled text that would land in
+the system prompt), and the `@codebase` index (it reads the whole tree and posts chunks of it to
+the configured endpoint). Granting trust turns them on in place, without a reload.
+
+Note that `pscode --trust` passes `--disable-workspace-trust`, which bypasses trust for that run
+*without recording it* — handy for a demo, but it means the next launch from the app menu starts
+untrusted again. Trust the folder once to make it stick.
 
 ---
 

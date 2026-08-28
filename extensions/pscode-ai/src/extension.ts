@@ -10,7 +10,7 @@ import { EXPLAIN_PROMPT } from './agent/prompts';
 import { ChatViewProvider } from './chat/chatViewProvider';
 import { ChatHistory } from './chat/history';
 import { registerProjectRulesWatcher } from './context/projectRules';
-import { initSemanticIndex, registerIncrementalIndexing } from './context/semanticIndex';
+import { initSemanticIndex, registerIncrementalIndexing, SemanticIndex } from './context/semanticIndex';
 import { acceptPendingEdit, discardPendingEdit, reportProviderError, runInlineEdit } from './inline/inlineEdit';
 import { registerProposalProvider } from './inline/proposalDocuments';
 import { createProvider, readSettings } from './providers/registry';
@@ -30,8 +30,6 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		statusBar,
 		registerProposalProvider(),
-		registerProjectRulesWatcher(),
-		registerIncrementalIndexing(index),
 
 		vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chat, {
 			// Keeps the transcript alive when the user switches to another side-bar view.
@@ -47,6 +45,9 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('pscode.restoreCheckpoint', () => chat.restoreLatestCheckpoint()),
 
 		vscode.commands.registerCommand('pscode.buildSemanticIndex', async () => {
+			if (!requireTrust('Building the @codebase index')) {
+				return;
+			}
 			try {
 				const outcome = await vscode.window.withProgress(
 					{
@@ -81,6 +82,9 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('pscode.addSelectionToChat', () => chat.addSelectionToChat()),
 
 		vscode.commands.registerCommand('pscode.inlineEdit', async () => {
+			if (!requireTrust('Editing with Ctrl+I')) {
+				return;
+			}
 			try {
 				await runInlineEdit();
 			} catch (error) {
@@ -112,31 +116,100 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 	);
 
+	enableTrustedFeatures(context, index, chat);
 	revealPanelOnFirstRun(context);
 
 	log.info('PSCode AI ready');
 }
 
 /**
- * Shows the AI panel the first time a profile is used.
+ * Turns on everything that may only run in a trusted folder - now, or the moment trust is granted.
+ *
+ * Restricted Mode is not an all-or-nothing switch for this extension. Chat has no tools and cannot
+ * touch the workspace, so it answers questions perfectly well in an untrusted folder, and the
+ * manifest says `"supported": "limited"` so the panel loads instead of silently vanishing. What
+ * cannot run is anything the *folder* gets to influence on its own:
+ *
+ * - Agent mode, because `run_command` is one of its tools - opening a repo must never be enough
+ *   to run its code.
+ * - The AGENTS.md project rules, because that file is attacker-controlled text that would land
+ *   in the system prompt. Prompt injection is the interesting half of this: rules that say
+ *   "always run the build script first" are instructions to a model holding real tools.
+ * - The semantic index, because it walks the whole tree and posts chunks of it to the configured
+ *   endpoint, which is not necessarily localhost.
+ *
+ * Granting trust re-enables them in place: VS Code keeps the extension host alive, so a reload
+ * would only throw away the conversation the user is in the middle of.
+ */
+function enableTrustedFeatures(
+	context: vscode.ExtensionContext,
+	index: SemanticIndex,
+	chat: ChatViewProvider,
+): void {
+	if (!vscode.workspace.isTrusted) {
+		log.warn('Restricted Mode: chat only. Agent mode, Ctrl+I, AGENTS.md rules and @codebase stay off until this folder is trusted.');
+		context.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => {
+			log.info('Workspace trust granted');
+			enableTrustedFeatures(context, index, chat);
+			// The panel is showing a "Restricted Mode" notice and a disabled Agent button;
+			// without this it would keep showing them in a folder that is now trusted.
+			chat.publishStatus();
+		}));
+		return;
+	}
+
+	context.subscriptions.push(
+		registerProjectRulesWatcher(),
+		registerIncrementalIndexing(index),
+	);
+	log.info('Workspace is trusted: agent mode, project rules and @codebase indexing are active');
+}
+
+/**
+ * Refuses a trusted-only action with the one sentence that explains it, and a way out.
+ *
+ * A command that quietly does nothing is the worst version of Restricted Mode: the user presses
+ * Ctrl+I, nothing happens, and nothing on screen says why.
+ */
+function requireTrust(action: string): boolean {
+	if (vscode.workspace.isTrusted) {
+		return true;
+	}
+	void vscode.window
+		.showWarningMessage(`${action} needs a trusted folder. PSCode AI is in chat-only mode.`, 'Manage Workspace Trust')
+		.then(choice => {
+			if (choice) {
+				void vscode.commands.executeCommand('workbench.trust.manage');
+			}
+		});
+	return false;
+}
+
+/**
+ * Shows the AI panel the first time each workspace is opened.
  *
  * `contributes.configurationDefaults` opens the secondary side bar, but it opens with no active
  * container: upstream's default there is the Copilot chat panel, which `disableCloudChat` hides,
- * and nothing promotes this container into the empty slot. The result on a fresh profile - the
- * only experience a new installer gets - is an empty pane where the AI should be, with no hint
- * that "PSCode: Open AI Chat" is what fixes it.
+ * and nothing promotes this container into the empty slot. The result is an empty pane where the
+ * AI should be, with no hint that "PSCode: Open AI Chat" is what fixes it.
  *
- * Done once per profile and recorded in globalState, because after that the user's own decision
- * to close the panel has to win. An editor that reopens a panel you closed is worse than one
- * that never opened it.
+ * Recorded per workspace, not once per profile. Container visibility is itself workspace state -
+ * `workbench.view.extension.pscode-ai.state` is stored per folder - so a single profile-wide flag
+ * could be spent in one folder and leave every folder opened after it with the same blank pane the
+ * function exists to prevent. That is exactly what happened here: the flag was set, the view was
+ * separately left hidden for this folder, and the reveal could never run again.
+ *
+ * Still once per workspace, and the flag is written before the reveal, because after the first
+ * time the user's own decision to close the panel has to win. An editor that reopens a panel you
+ * closed is worse than one that never opened it.
  */
 function revealPanelOnFirstRun(context: vscode.ExtensionContext): void {
 	const KEY = 'pscode.panelRevealed';
-	if (context.globalState.get<boolean>(KEY)) {
+	if (context.workspaceState.get<boolean>(KEY)) {
 		return;
 	}
-	void context.globalState.update(KEY, true);
-	log.info('First run for this profile: revealing the AI panel');
+	void context.workspaceState.update(KEY, true);
+	log.info('First run for this workspace: revealing the AI panel');
 	void vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
 }
 

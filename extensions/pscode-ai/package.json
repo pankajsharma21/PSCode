@@ -21,7 +21,8 @@
   "capabilities": {
     "virtualWorkspaces": false,
     "untrustedWorkspaces": {
-      "supported": false
+      "supported": "limited",
+      "description": "Chat has no tools and cannot touch your workspace, so it answers questions in Restricted Mode. Agent mode stays off because it can run commands, and AGENTS.md rules and the @codebase index stay off because they read the folder into the model's prompt. Trust the folder to enable them."
     }
   },
   "scripts": {

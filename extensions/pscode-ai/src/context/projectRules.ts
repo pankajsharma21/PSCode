@@ -97,6 +97,12 @@ export async function readProjectRules(): Promise<ProjectRules> {
 	if (!vscode.workspace.getConfiguration('pscode').get<boolean>('ai.projectRules', true)) {
 		return EMPTY;
 	}
+	// Never in an untrusted folder. This file is text the repository controls and it goes straight
+	// into the system prompt, so in a folder the user has not vouched for it is not a convention
+	// file - it is an instruction channel from whoever wrote the repo to a model holding tools.
+	if (!vscode.workspace.isTrusted) {
+		return EMPTY;
+	}
 	if (cached) {
 		return cached;
 	}
