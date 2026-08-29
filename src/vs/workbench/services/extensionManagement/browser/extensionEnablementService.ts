@@ -596,7 +596,17 @@ export class ExtensionEnablementService extends Disposable implements IWorkbench
 			return false;
 		}
 
-		if (this.contextService.isInsideWorkspace(extension.location)) {
+		// An extension that lives inside the untrusted folder is code that folder supplied, so it
+		// is disabled outright and its manifest is never consulted. That rule must not apply to
+		// the ones that ship with the product: they came from the install, not from the workspace,
+		// and they only look workspace-supplied when PSCode runs from source, where every built-in
+		// sits in <repo>/extensions and the folder being opened is the repo. Without this, opening
+		// PSCode's own repo untrusted disabled *every* built-in - the AI panel, git, the language
+		// features - with nothing logged anywhere, because an extension that never loads never
+		// logs. A packaged install is unaffected either way; its extensions are outside any
+		// workspace. Built-ins still answer to their own `untrustedWorkspaces` capability below,
+		// so this decides who is asked, not who is allowed.
+		if (!extension.isBuiltin && this.contextService.isInsideWorkspace(extension.location)) {
 			return true;
 		}
 
