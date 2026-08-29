@@ -494,6 +494,20 @@ Note that `pscode --trust` passes `--disable-workspace-trust`, which bypasses tr
 *without recording it* — handy for a demo, but it means the next launch from the app menu starts
 untrusted again. Trust the folder once to make it stick.
 
+**One exception, and it only bites the dev build: opening this repo itself untrusted disables
+every extension, not just some of them.** `_isDisabledByWorkspaceTrust` returns true for any
+extension whose files sit *inside* the untrusted folder, before it ever reads the manifest:
+
+```ts
+if (this.contextService.isInsideWorkspace(extension.location)) { return true; }
+```
+
+Running from source, every built-in lives in `<repo>/extensions/`, so opening `PSCode/` untrusted
+disables all of them — the AI panel, git, the language features — and nothing is logged, because an
+extension that never loads never logs. Trust the folder and they all come back. A packaged install
+is unaffected: its extensions live in `/usr/share/pscode/resources/app/extensions`, outside any
+workspace you would open.
+
 ---
 
 ## Configuration
