@@ -24,7 +24,7 @@ Copilot extension is deleted, and `product.json`'s `disableCloudChat` flag makes
 the editor watermark hints, the help-menu entries and the onboarding walkthroughs in one move.
 
 | **Extension host** | Node.js, full `vscode` API, filesystem, sockets | all 17 modules in `src/` |
-| **Model server** | Separate OS process, usually `localhost:11434` | not mine — Ollama / llama.cpp |
+| **Model server** | Separate OS process on a port picked at startup | llama.cpp's `llama-server`, shipped inside PSCode and owned by it |
 
 The webview and the extension host communicate **only** by `postMessage`. That boundary is the
 security model, not a convenience:
@@ -90,6 +90,7 @@ Anything that needs the editor lives above the provider layer.
 
 | Provider | Transport | Tool calls arrive as |
 |---|---|---|
+| `bundled.ts` | awaits the engine PSCode started, then delegates to `openaiCompat` | the endpoint is discovered, not configured |
 | `ollama.ts` | newline-delimited JSON on `/api/chat` | a complete object per chunk, `arguments` already decoded |
 | `openaiCompat.ts` | SSE on `/v1/chat/completions` | **fragments**, keyed only by array index |
 | `anthropic.ts` | SSE on `/v1/messages` | `tool_use` blocks, input as incremental JSON text |
@@ -124,7 +125,7 @@ first time:
 
 | Condition | Message | Hint |
 |---|---|---|
-| `ECONNREFUSED` | Could not connect to the model server at … | Start it with `ollama serve`, check `ollama list` |
+| `ECONNREFUSED` | Could not connect to the model server at … | Only reachable for a provider you run yourself; the bundled engine is started by PSCode |
 | HTTP 404 | … returned 404: model 'x' not found | Either the model is not pulled, or the endpoint path is wrong |
 | HTTP 401/403 | The server rejected the request | Check the key; local servers usually need none |
 | `ETIMEDOUT` | The server did not respond in time | CPU inference is slow to first token; raise the timeout |

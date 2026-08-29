@@ -11,6 +11,7 @@
  *  chunks in well under a second on CPU, which is what makes indexing viable without a GPU.
  *--------------------------------------------------------------------------------------------*/
 
+import { bundledRuntime } from '../runtime/bundledRuntime';
 import { requestJson } from './http';
 // `import type` on purpose: registry.ts imports vscode, and erasing this at compile time is
 // what keeps this module loadable in plain Node - same property the chat providers rely on
@@ -100,6 +101,26 @@ class OpenAICompatibleEmbeddings implements EmbeddingClient {
 	}
 }
 
+/**
+ * The bundled embedding engine, whose URL only exists once it is running.
+ *
+ * Starting it here rather than at activation is deliberate: this is the first line of
+ * `PSCode: Build Semantic Index`, so the several hundred megabytes it needs are only spent by
+ * someone who actually asked for @codebase.
+ */
+class LazyEndpointEmbeddings implements EmbeddingClient {
+	constructor(
+		private readonly ensureEndpoint: () => Promise<string>,
+		readonly model: string,
+		private readonly timeoutMs: number
+	) { }
+
+	async embed(texts: string[], signal: AbortSignal): Promise<Float32Array[]> {
+		const endpoint = await this.ensureEndpoint();
+		return new OpenAICompatibleEmbeddings(endpoint, this.model, '', this.timeoutMs).embed(texts, signal);
+	}
+}
+
 function embeddingHint(model: string): string {
 	return `Pull the embedding model first: "ollama pull ${model}". It is separate from the chat model, and a chat model cannot stand in for it.`;
 }
@@ -110,6 +131,20 @@ function embeddingHint(model: string): string {
  */
 export function createEmbeddingClient(settings: AISettings): EmbeddingClient {
 	switch (settings.provider) {
+		case 'bundled': {
+			const runtime = bundledRuntime();
+			if (!runtime?.embedModel) {
+				throw new ProviderError(
+					'This build does not include an embedding model, so @codebase search is unavailable.',
+					'Run scripts/fetch-llm-runtime.sh to fetch it, or point "pscode.ai.provider" at a server that offers embeddings.'
+				);
+			}
+			return new LazyEndpointEmbeddings(
+				() => runtime.ensureEmbedEndpoint(),
+				settings.embeddingModel,
+				settings.requestTimeoutMs
+			);
+		}
 		case 'ollama':
 			return new OllamaEmbeddings(settings.endpoint, settings.embeddingModel, settings.requestTimeoutMs);
 		case 'openai-compatible':

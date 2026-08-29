@@ -3,13 +3,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { bundledRuntime } from '../runtime/bundledRuntime';
 import { AnthropicProvider } from './anthropic';
+import { BundledProvider } from './bundled';
 import { OllamaProvider } from './ollama';
 import { OpenAICompatibleProvider } from './openaiCompat';
-import { LLMProvider } from './types';
+import { LLMProvider, ProviderError } from './types';
 
 export interface AISettings {
-	provider: 'ollama' | 'openai-compatible' | 'anthropic';
+	provider: 'bundled' | 'ollama' | 'openai-compatible' | 'anthropic';
 	endpoint: string;
 	model: string;
 	apiKey: string;
@@ -33,6 +35,9 @@ export interface AISettings {
 
 /** Default endpoint per provider, used when the user has not overridden it. */
 const DEFAULT_ENDPOINTS: Record<AISettings['provider'], string> = {
+	// The bundled engine binds a free port at startup, so its endpoint is discovered, never
+	// configured. Empty here means "ask the runtime", not "unset".
+	'bundled': '',
 	'ollama': 'http://127.0.0.1:11434',
 	'openai-compatible': 'http://127.0.0.1:8080',
 	'anthropic': 'https://api.anthropic.com',
@@ -51,12 +56,20 @@ const DEFAULT_SEMANTIC_EXCLUDE =
 
 export function readSettings(): AISettings {
 	const config = vscode.workspace.getConfiguration('pscode');
-	const provider = config.get<AISettings['provider']>('ai.provider', 'ollama');
+	const runtime = bundledRuntime();
+	// The bundled engine is the default, and the only one that works with nothing else installed.
+	// It is also skipped automatically when a build has no weights in it, so a source checkout
+	// that never ran scripts/fetch-llm-runtime.sh falls back to Ollama instead of failing.
+	const configured = config.get<AISettings['provider']>('ai.provider', 'bundled');
+	const provider: AISettings['provider'] = configured === 'bundled' && !runtime ? 'ollama' : configured;
+
+	// The model is the file that shipped; there is nothing to choose and nothing to mistype.
+	const bundledModel = provider === 'bundled' ? runtime?.chatModel : undefined;
 
 	return {
 		provider,
 		endpoint: (config.get<string>('ai.endpoint', '') || DEFAULT_ENDPOINTS[provider]).trim(),
-		model: config.get<string>('ai.model', 'qwen2.5:7b').trim(),
+		model: (bundledModel ?? config.get<string>('ai.model', 'qwen2.5:7b')).trim(),
 		// An environment variable beats settings.json so a key never has to be committed.
 		apiKey: (process.env['PSCODE_API_KEY'] ?? config.get<string>('ai.apiKey', '')).trim(),
 		temperature: config.get<number>('ai.temperature', 0.2),
@@ -67,7 +80,10 @@ export function readSettings(): AISettings {
 		agentMaxIterations: config.get<number>('agent.maxIterations', 12),
 		approveShellCommands: config.get<boolean>('agent.approveShellCommands', true),
 		approveFileWrites: config.get<boolean>('agent.approveFileWrites', true),
-		embeddingModel: config.get<string>('ai.embeddingModel', 'nomic-embed-text').trim(),
+		embeddingModel: (
+			(provider === 'bundled' ? runtime?.embedModel : undefined)
+			?? config.get<string>('ai.embeddingModel', 'nomic-embed-text')
+		).trim(),
 		semanticInclude: config.get<string>('ai.semanticInclude', DEFAULT_SEMANTIC_INCLUDE),
 		semanticExclude: config.get<string>('ai.semanticExclude', DEFAULT_SEMANTIC_EXCLUDE),
 		semanticMaxFiles: config.get<number>('ai.semanticMaxFiles', 1500),
@@ -78,6 +94,16 @@ export function readSettings(): AISettings {
 
 export function createProvider(settings: AISettings): LLMProvider {
 	switch (settings.provider) {
+		case 'bundled': {
+			const runtime = bundledRuntime();
+			if (!runtime) {
+				throw new ProviderError(
+					'This build does not include the model engine.',
+					'Run scripts/fetch-llm-runtime.sh, or point "pscode.ai.provider" at a server you run yourself.'
+				);
+			}
+			return new BundledProvider(() => runtime.ensureChatEndpoint(), settings.model, settings.requestTimeoutMs);
+		}
 		case 'anthropic':
 			return new AnthropicProvider(settings.endpoint, settings.model, settings.apiKey, settings.requestTimeoutMs);
 		case 'openai-compatible':

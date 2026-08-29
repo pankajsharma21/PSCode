@@ -275,9 +275,10 @@ Run **PSCode: Build Semantic Index** once, then put `@codebase` in a question:
   → retryWithBackoff in src/retry.js
 ```
 
-Embeddings come from a **separate, much smaller model** (`nomic-embed-text`, ~274MB — pull it with
-`ollama pull nomic-embed-text`). A 7B chat model is both wasteful and worse at this. It runs
-comfortably on a CPU: a batch of chunks embeds in well under a second.
+Embeddings come from a **separate, much smaller model** (`nomic-embed-text-v1.5`, ~274MB), which
+also ships in the package. A chat model is both wasteful and worse at this. Its engine starts on
+the first `@codebase` use rather than at startup, so nobody pays for it who never searches, and it
+runs comfortably on a CPU: a batch of chunks embeds in well under a second.
 
 Design choices that follow from having no GPU:
 
@@ -311,12 +312,43 @@ Two rules keep that from becoming a nuisance:
 
 Turn the whole thing off with `pscode.ai.semanticAutoUpdate`.
 
+### The model ships with the editor
+PSCode does not ask you to install a model server. It carries llama.cpp's `llama-server` and a
+quantised Qwen2.5-Coder 3B inside the package, starts the engine when a window opens, and kills it
+when the window closes. Installing the editor is the whole setup.
+
+That is a deliberate trade of installer size for a promise: **the editor cannot be broken by
+something outside it.** Depending on Ollama meant the AI silently stopped working whenever the
+daemon was not running, was upgraded, or no longer had the model the settings named — three
+failure modes that all look identical from inside the editor, and none of which are the editor's
+fault or within its power to fix.
+
+Details that make it hold up:
+
+- **The port is chosen at startup, not configured.** Two windows are two engines on two ports, so
+  a second window never collides with the first.
+- **The engine dies with the window, including when the window is killed.** `deactivate` stops it
+  on a clean close, and `setpriv --pdeathsig` has the kernel signal it if the extension host dies
+  some other way. An orphaned process holding 2GB of weights would be exactly the problem this
+  design exists to remove.
+- **The embedding engine starts lazily**, on the first `@codebase` use — nobody pays a few hundred
+  megabytes of memory for a feature they never open.
+- **3B, not 7B.** Agent mode depends on well-formed tool calls, and that is the first thing that
+  degrades in smaller models; 3B holds up where 1.5B does not. A 7B is better at code but its
+  first token can take over a minute on a CPU, which reads as a broken editor.
+- **The weights are not in git.** `scripts/fetch-llm-runtime.sh` pulls pinned versions and
+  verifies them against the checksums HuggingFace publishes; packaging copies them in.
+
+Nothing above the provider interface knows any of this happened: the engine speaks the OpenAI API,
+so it arrived as one new `LLMProvider` and no change to chat, inline edit or the agent loop.
+
 ### Bring your own model
-| Provider | Use it for | Key needed |
+| Provider | Use it for | Needs anything installed? |
 |---|---|---|
-| **`ollama`** (default) | Fully local, fully offline | no |
-| `openai-compatible` | llama.cpp, LM Studio, vLLM, OpenRouter, OpenAI | depends |
-| `anthropic` | Claude, when a 7B model isn't enough | yes |
+| **`bundled`** (default) | The engine and weights that ship inside PSCode | no — nothing at all |
+| `ollama` | An Ollama server you already run | Ollama + a pulled model |
+| `openai-compatible` | llama.cpp, LM Studio, vLLM, OpenRouter, OpenAI | a server, and sometimes a key |
+| `anthropic` | Claude, when a 3B model isn't enough | an API key |
 
 All three implement one 6-method interface (`LLMProvider`). Chat, inline edit and the agent are
 written against that interface only and contain no provider-specific code.
@@ -329,23 +361,15 @@ restrict it to official VS Code builds. Themes, language packs and most tooling 
 
 ## Install
 
-PSCode installs like any other editor. Pick one of the three routes below, then point it at a
-model.
+PSCode installs like any other editor, and that is the entire setup. There is no model server to
+install, no daemon to start, and nothing to pull: the engine and the weights are inside the
+package, the extension starts them when a window opens, and kills them when it closes.
 
-### 1. Get a model running first
+That is why the installer is ~2.2GB rather than ~230MB. It buys an editor that answers a question
+on a machine that has never heard of Ollama, and one that cannot break because a background
+service was stopped, upgraded, or holding a different model than the settings expected.
 
-```bash
-# Ollama — the default, and the simplest
-curl -fsSL https://ollama.com/install.sh | sh
-ollama serve &
-ollama pull qwen2.5:7b        # tool-capable, ~4.7 GB, runs on CPU
-```
-
-Any tool-capable model works. `qwen2.5:7b` and `llama3.2` are both good starting points; Agent
-mode needs tool calling, so a model without it will only work in Chat mode. PSCode talks to
-`http://127.0.0.1:11434` by default and the status bar turns red if nothing answers there.
-
-### 2. Download the installer
+### 1. Download the installer
 
 Both installers are attached to the [latest release][releases]. **The repository is private, so a
 plain `wget` of an asset URL will not work** — use the authenticated GitHub CLI:
@@ -516,7 +540,7 @@ All settings live under `pscode.` in Settings (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
 
 | Setting | Default | Notes |
 |---|---|---|
-| `pscode.ai.provider` | `ollama` | `ollama` \| `openai-compatible` \| `anthropic` |
+| `pscode.ai.provider` | `bundled` | `bundled` \| `ollama` \| `openai-compatible` \| `anthropic` |
 | `pscode.ai.endpoint` | `http://127.0.0.1:11434` | Base URL, no trailing path |
 | `pscode.ai.model` | `qwen2.5:7b` | Must already be pulled |
 | `pscode.ai.apiKey` | `""` | `PSCODE_API_KEY` env var wins over this |
@@ -561,17 +585,22 @@ All settings live under `pscode.` in Settings (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
 │  context/projectRules.ts    AGENTS.md → system prompt         │
 │  context/semanticIndex.ts   @codebase: chunk, embed, rank     │
 │                                                              │
+│  runtime/modelServer.ts     spawns and reaps llama-server      │
+│  runtime/bundledRuntime.ts  what shipped: engine + weights     │
+│                                                              │
 │  providers/  ── LLMProvider ────────────────────────────────┐ │
-│    ollama.ts          NDJSON, native /api/chat             │ │
+│    bundled.ts         awaits the engine, then delegates     │ │
+│    ollama.ts          NDJSON, native /api/chat              │ │
 │    openaiCompat.ts    SSE, reassembles tool-call fragments  │ │
 │    anthropic.ts       SSE, tool_use blocks                  │ │
 │    embeddings.ts      /api/embed · /v1/embeddings            │ │
 │    http.ts            Node http/https, zero npm deps        │ │
 └──────────────────────────┬───────────────────────────────────┘
-                           │  HTTP
-                    ┌──────▼──────┐
-                    │  localhost  │   Ollama · llama.cpp · LM Studio
-                    └─────────────┘
+                           │  HTTP, on a port picked at startup
+                    ┌──────▼───────────────┐
+                    │  llama-server        │  started by the window,
+                    │  inside the install  │  killed when it closes
+                    └──────────────────────┘
 ```
 
 Three decisions shape everything else:
@@ -598,6 +627,28 @@ Full detail: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 The provider layer is exercised against a **live local model**, not a mock — the bugs that matter
 here (a stream that never terminates, tool arguments in the wrong shape, an unhelpful error on a
 dead port) are precisely the ones a mocked socket cannot reproduce.
+
+The engine that ships in the box is tested the same way, and its test is about *lifecycle* rather
+than answers — that PSCode owns the process is the claim worth defending:
+
+```bash
+./scripts/fetch-llm-runtime.sh
+node extensions/pscode-ai/test/runtime-smoke.js
+```
+
+```
+PASS  the runtime is present — qwen2.5-coder-3b-instruct-q4_k_m
+PASS  no engine is running before the first call
+PASS  the engine starts on demand — http://127.0.0.1:44743 in 2.3s
+PASS  concurrent callers share one engine — 1 process(es)
+PASS  it answers a chat turn — "READY"
+PASS  tool calls come back structured — read_file({"path": "src/app.ts"})
+PASS  the embedding engine starts separately
+PASS  it returns an embedding vector — 768 dimensions
+PASS  dispose() leaves no engine behind — 0 still running
+```
+
+The other providers are still tested against a live server you supply:
 
 ```bash
 ollama serve &
@@ -626,7 +677,6 @@ Both modules load in plain Node because neither imports `vscode` — `embeddings
 settings as an `import type`, so the dependency is erased at compile time.
 
 ```bash
-ollama pull nomic-embed-text
 node extensions/pscode-ai/test/embedding-smoke.js
 ```
 
@@ -695,7 +745,8 @@ Being precise about this matters more than the line count.
 
 | Area | Files |
 |---|---|
-| Provider layer | `providers/{types,http,ollama,openaiCompat,anthropic,embeddings,registry}.ts` |
+| Provider layer | `providers/{types,http,bundled,ollama,openaiCompat,anthropic,embeddings,registry}.ts` |
+| Bundled engine | `runtime/{modelServer,bundledRuntime}.ts`, `scripts/fetch-llm-runtime.sh` |
 | Agent | `agent/{agentLoop,tools,prompts,approvals,checkpoints}.ts` |
 | Chat | `chat/{chatViewProvider,history}.ts`, `media/chat.{js,css}` |
 | Inline edit | `inline/{inlineEdit,proposalDocuments}.ts` |

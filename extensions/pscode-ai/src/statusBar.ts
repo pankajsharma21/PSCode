@@ -1,9 +1,9 @@
 /*---------------------------------------------------------------------------------------------
  *  PSCode AI - status bar
  *
- *  Shows which model is live and whether the server is actually reachable. This exists because
- *  the failure mode of a local model is silence: without an indicator, a stopped Ollama looks
- *  exactly like a slow one.
+ *  Shows which model is live and whether the engine is actually answering. This exists because
+ *  the failure mode of a local model is silence: without an indicator, an engine that died looks
+ *  exactly like one that is thinking.
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
@@ -26,7 +26,9 @@ export class AIStatusBar implements vscode.Disposable {
 	refresh(): void {
 		const settings = readSettings();
 		this.item.text = `$(sparkle) ${settings.model}`;
-		this.item.tooltip = `PSCode AI — ${settings.provider} at ${settings.endpoint}\nClick to change model`;
+		this.item.tooltip = settings.provider === 'bundled'
+			? `PSCode AI — ${settings.model}, running inside PSCode\nClick to change model`
+			: `PSCode AI — ${settings.provider} at ${settings.endpoint}\nClick to change model`;
 		this.item.backgroundColor = undefined;
 
 		if (this.probe) {
@@ -57,8 +59,12 @@ export class AIStatusBar implements vscode.Disposable {
 		} catch (error) {
 			log.debug(`Status probe failed: ${error instanceof Error ? error.message : String(error)}`);
 			this.item.text = `$(debug-disconnect) ${settings.model}`;
-			this.item.tooltip = `PSCode AI — cannot reach ${settings.endpoint}.\n`
-				+ `If you are using Ollama, run "ollama serve".\nClick to change model.`;
+			this.item.tooltip = settings.provider === 'bundled'
+				? `PSCode AI — the bundled engine is not answering yet.\n`
+					+ `It starts with the window and can take a minute to load its weights the first time.\n`
+					+ `"PSCode: Show AI Logs" has the details.`
+				: `PSCode AI — cannot reach ${settings.endpoint || '(no endpoint set)'}.\n`
+					+ `That server is one you run yourself; "bundled" needs nothing running.\nClick to change model.`;
 			this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
 		} finally {
 			clearTimeout(timeout);

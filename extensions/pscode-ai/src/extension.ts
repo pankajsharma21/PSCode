@@ -14,11 +14,16 @@ import { initSemanticIndex, registerIncrementalIndexing, SemanticIndex } from '.
 import { acceptPendingEdit, discardPendingEdit, reportProviderError, runInlineEdit } from './inline/inlineEdit';
 import { registerProposalProvider } from './inline/proposalDocuments';
 import { createProvider, readSettings } from './providers/registry';
+import { BundledRuntime, bundledRuntime, discoverRuntime, setBundledRuntime } from './runtime/bundledRuntime';
 import { AIStatusBar } from './statusBar';
 import { log } from './util/logger';
 
 export function activate(context: vscode.ExtensionContext): void {
 	log.info('PSCode AI activating');
+
+	// Before anything reads settings: `readSettings()` asks the runtime for the model name and
+	// falls back to another provider when this build carries no weights.
+	startBundledRuntime(context);
 
 	// workspaceState, not globalState: a conversation belongs to the codebase it is about.
 	const history = new ChatHistory(context.workspaceState);
@@ -213,7 +218,51 @@ function revealPanelOnFirstRun(context: vscode.ExtensionContext): void {
 	void vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
 }
 
+/**
+ * Brings up the engine that ships with PSCode.
+ *
+ * Started here, at activation, rather than on the first question: loading several gigabytes of
+ * weights takes tens of seconds on CPU, and doing it while someone waits for an answer makes the
+ * model look far slower than it is. Nothing blocks on it - `ensureChatEndpoint()` is awaited per
+ * request, so a question asked during startup simply waits for the same promise.
+ *
+ * A build without weights is not an error: `discoverRuntime` returns undefined, settings fall
+ * back to Ollama, and the status bar says what is missing.
+ */
+function startBundledRuntime(context: vscode.ExtensionContext): void {
+	const layout = discoverRuntime(context.extensionPath);
+	if (!layout) {
+		log.warn('No bundled model engine in this build; falling back to the configured provider.');
+		setBundledRuntime(undefined);
+		return;
+	}
+
+	const config = vscode.workspace.getConfiguration('pscode');
+	const runtime = new BundledRuntime(layout, {
+		contextSize: config.get<number>('ai.contextSize', 8192),
+		threads: config.get<number>('ai.threads', 0),
+		// Reading a multi-gigabyte model off a cold disk is slow the first time and fast after
+		// the page cache is warm, so this is sized for the cold case.
+		startupTimeoutMs: config.get<number>('ai.startupTimeoutMs', 180000),
+		log: message => log.info(message),
+	});
+	setBundledRuntime(runtime);
+	context.subscriptions.push({ dispose: () => runtime.dispose() });
+
+	// Kick it off now, but never let a startup failure take activation down with it: chat can
+	// still be pointed at another provider, and the status bar reports the failure.
+	void runtime.ensureChatEndpoint().catch(error => {
+		log.error('The bundled model engine failed to start', error);
+	});
+}
+
 export function deactivate(): void {
+	// The subscription registered in startBundledRuntime already stops the engine, but deactivate
+	// is the one hook guaranteed to run on shutdown, and an inference process left holding
+	// gigabytes of weights after its window is gone is exactly what a user would blame the editor
+	// for. dispose() is idempotent, so stopping it twice costs nothing.
+	bundledRuntime()?.dispose();
+	setBundledRuntime(undefined);
 	log.dispose();
 }
 

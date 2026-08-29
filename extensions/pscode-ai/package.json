@@ -175,27 +175,29 @@
         "pscode.ai.provider": {
           "type": "string",
           "enum": [
+            "bundled",
             "ollama",
             "openai-compatible",
             "anthropic"
           ],
-          "default": "ollama",
+          "default": "bundled",
           "enumDescriptions": [
-            "Local Ollama server (default, fully offline)",
+            "The engine and weights that ship with PSCode. Starts with the window, stops with it, needs nothing installed.",
+            "A local Ollama server you run yourself",
             "Any OpenAI-compatible /v1/chat/completions endpoint (llama.cpp, LM Studio, vLLM, OpenAI, OpenRouter)",
             "Anthropic Messages API"
           ],
-          "description": "Which backend PSCode AI talks to."
+          "description": "Which backend PSCode AI talks to. \"bundled\" needs no setup; the others expect a server you provide."
         },
         "pscode.ai.endpoint": {
           "type": "string",
-          "default": "http://127.0.0.1:11434",
-          "description": "Base URL of the model server. Ollama defaults to http://127.0.0.1:11434; llama.cpp/LM Studio typically http://127.0.0.1:8080 or :1234."
+          "default": "",
+          "description": "Base URL of the model server. Leave empty to use the provider default; ignored by \"bundled\", which starts its own engine on a free port."
         },
         "pscode.ai.model": {
           "type": "string",
           "default": "qwen2.5:7b",
-          "description": "Model identifier to use for chat, inline edit and the agent. Must be pulled already (see \"ollama list\"). Tool calling is required for Agent mode."
+          "description": "Model identifier for chat, inline edit and the agent. Ignored by the \"bundled\" provider, which uses the weights it shipped with. Tool calling is required for Agent mode."
         },
         "pscode.ai.apiKey": {
           "type": "string",
@@ -213,6 +215,23 @@
           "type": "number",
           "default": 4096,
           "description": "Maximum tokens to generate per response."
+        },
+        "pscode.ai.contextSize": {
+          "type": "number",
+          "default": 8192,
+          "minimum": 512,
+          "description": "Context window for the bundled engine, in tokens. Larger costs memory and slows the first token; agent turns need more room than chat."
+        },
+        "pscode.ai.threads": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "CPU threads for the bundled engine. 0 picks one fewer than your core count, leaving a core for the editor."
+        },
+        "pscode.ai.startupTimeoutMs": {
+          "type": "number",
+          "default": 180000,
+          "description": "How long to wait for the bundled engine to load its weights before reporting a failure."
         },
         "pscode.ai.requestTimeoutMs": {
           "type": "number",
@@ -252,7 +271,7 @@
         "pscode.ai.embeddingModel": {
           "type": "string",
           "default": "nomic-embed-text",
-          "description": "Embedding model for @codebase search. A separate, much smaller model than the chat model - pull it with \"ollama pull nomic-embed-text\". Changing this invalidates the existing index."
+          "description": "Embedding model for @codebase. Ignored by the \"bundled\" provider, which uses the embedding weights it shipped with."
         },
         "pscode.ai.semanticInclude": {
           "type": "string",

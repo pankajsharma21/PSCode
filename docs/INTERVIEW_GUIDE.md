@@ -26,18 +26,19 @@ left them three threads to pull.
 
 ## 2. The five-minute demo
 
-Run through this end to end at least twice before the interview. **Have PSCode already built and
-`ollama serve` already running** — never build on camera.
+Run through this end to end at least twice before the interview. **Have PSCode already built** —
+never build on camera. There is no model server to remember to start: PSCode brings up its own
+engine when the window opens.
 
 **Pre-flight (do this 10 minutes before):**
 
 ```bash
-ollama serve &
-ollama list                      # confirm your model is there
 ./scripts/code.sh <a small demo repo>
 ```
 
-Confirm the status bar shows `✨ qwen2.5:7b` and is **not** red. Open a file with a real bug in it.
+Confirm the status bar shows `✨ qwen2.5-3b-instruct-q4_k_m` and is **not** red — it goes green a
+few seconds after the window opens, once the weights are loaded. Open a file with a real bug in
+it.
 
 **The demo, in order — each step shows something the previous one did not:**
 
@@ -57,11 +58,15 @@ Confirm the status bar shows `✨ qwen2.5:7b` and is **not** red. Open a file wi
    and raise it to five"*. Narrate the trace as it appears: "it searched, it read, now it wants to
    edit — and here's the approval prompt with the exact diff." *(120s)*
 
-5. **The failure case** — this is the step that separates you. Kill the model server
-   (`pkill ollama`) and send a message. Show the error: *"Could not connect to the model server at
-   http://127.0.0.1:11434. Nothing is listening there. Start it with `ollama serve`."*
-   Say: "Every error tells you the next action. `ECONNREFUSED` on its own teaches nobody
-   anything." *(45s)*
+5. **The failure case** — this is the step that separates you. Open an untrusted folder and send
+   a message. Chat answers normally; the panel says `RESTRICTED MODE — chat only, this folder is
+   not trusted`, Agent is disabled, and the reason is one line away from the fix. Say: "Agent mode
+   can run commands, so opening a repository must never be enough to run its code. Chat has no
+   tools, so it still works. The editor degrades to what is safe instead of disappearing."
+
+   If you want a second one: `ps` the engine PSCode started, kill it, and send another message —
+   the next turn restarts it, because the editor owns that process rather than depending on it.
+   *(45s)*
 
 Most candidates demo the happy path. Demoing a *good* failure is what people remember.
 
@@ -197,7 +202,7 @@ there.
 **Q: How do you test something this stochastic?**
 
 By testing the plumbing, not the model. The provider layer imports nothing from `vscode`, so it
-compiles and runs in plain Node — `test/provider-smoke.js` runs it against a **live** Ollama and
+compiles and runs in plain Node — `test/runtime-smoke.js` starts the real bundled engine and
 asserts structural properties that must hold regardless of what the model says: exactly one `done`
 event per stream, tool arguments parse as JSON, a dead port raises `ProviderError` with an
 actionable hint, a missing model produces a useful message.
@@ -286,7 +291,7 @@ Extension host (Node)
    ├── contextBuilder ──── budgeted: selection > @mentions > active file > diagnostics
    ├── agentLoop ───────── stream → tools → repeat, bounded
    ├── tools ───────────── 7 tools, workspace-confined, approval-gated
-   └── providers/ ──────── LLMProvider: ollama | openai-compatible | anthropic
+   └── providers/ ──────── LLMProvider: bundled | ollama | openai-compatible | anthropic
             │  HTTP
         localhost:11434
 ```
@@ -325,8 +330,9 @@ Volunteering a weakness reads as senior. Being caught hiding one reads as the op
 
 ## 8. Pre-interview checklist
 
-- [ ] `ollama serve` running, model pulled, `ollama list` verified
-- [ ] PSCode **already built** — never build live
+- [ ] PSCode **already built**, and `./scripts/fetch-llm-runtime.sh` has been run — never build live
+- [ ] One window opened and closed once, so the weights are in the page cache and the first answer
+      is fast
 - [ ] A small demo repo open with a real, fixable bug in it
 - [ ] Status bar green before you share your screen
 - [ ] Demo rehearsed twice, including the kill-the-server failure step

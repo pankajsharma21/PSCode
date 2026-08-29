@@ -54,3 +54,8 @@ dist
 .v[0-9]*/
 # Local agent validation evidence
 .agent-validation/
+
+# The bundled inference engine and weights: ~2.2GB, fetched by scripts/fetch-llm-runtime.sh and
+# copied into the installer at package time. Far too large for git, and reproducible from the
+# pinned versions in that script.
+extensions/pscode-ai/runtime/
