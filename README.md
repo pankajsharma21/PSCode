@@ -401,18 +401,31 @@ service was stopped, upgraded, or holding a different model than the settings ex
 ### 1. Download the installer
 
 Both installers are attached to the [latest release][releases]. **The repository is private, so a
-plain `wget` of an asset URL will not work** — use the authenticated GitHub CLI:
+plain `wget` of an asset URL will not work** — use the authenticated GitHub CLI.
+
+**They arrive in parts.** Shipping the model makes the `.deb` 2.3 GiB and the tarball 2.5 GiB, and
+a GitHub release asset must be under 2 GiB (`HTTP 422: size must be less than 2147483648`). So each
+installer is split and you join it back — `cat` is enough, the parts are in order:
 
 ```bash
-gh release download --repo pankajsharma21/PSCode --pattern 'pscode_*_amd64.deb'   # or
-gh release download --repo pankajsharma21/PSCode --pattern 'PSCode-linux-x64-*.tar.gz'
+# the .deb
+gh release download --repo pankajsharma21/PSCode --pattern 'pscode_*.deb.part*' --pattern 'SHA256SUMS'
+cat pscode_*.deb.part* > pscode_1.136.0_amd64.deb
+
+# or the tarball
+gh release download --repo pankajsharma21/PSCode --pattern 'PSCode-linux-x64-*.tar.gz.part*' --pattern 'SHA256SUMS'
+cat PSCode-linux-x64-*.tar.gz.part* > PSCode-linux-x64-1.136.0.tar.gz
+```
+
+Check the join before installing 2 GiB of weights — a truncated download otherwise fails much
+later, as a model that will not load:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
 ```
 
 Without a tag `gh` takes the latest release, which is what you want. Pass one (`gh release
 download v1.136.0-2 …`) only to pin an older build.
-
-The `.deb` revision carries a build timestamp, so the globs above are deliberate — they save you
-copying an exact filename.
 
 [releases]: https://github.com/pankajsharma21/PSCode/releases/latest
 
