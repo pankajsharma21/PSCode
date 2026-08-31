@@ -7,12 +7,15 @@
  *
  *  Drives a real window over CDP (see ui-driver.js for why not Playwright) against a real model.
  *
- *  Usage:
- *    ollama serve &
+ *  Usage - no daemon to start, the window brings up its own engine:
  *    ./scripts/code.sh --remote-debugging-port=9333 \
  *        --user-data-dir=/tmp/pscode-uitest --extensions-dir=/tmp/pscode-uitest-ext \
  *        --disable-workspace-trust <a small folder>
  *    node extensions/pscode-ai/test/activity-smoke.js 9333
+ *
+ *  Runs against whatever `pscode.ai.provider` is set to, so by default that is the bundled
+ *  engine. It is slow, and the test is built to wait rather than to assume - see the sampling
+ *  loops below.
  *--------------------------------------------------------------------------------------------*/
 const { attachWorkbench, openPanel, sleep } = require('./ui-driver');
 
@@ -125,7 +128,18 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 	`);
 	log('sent a question; sampling the strip...');
 
+	/*
+	 * The exit condition is "a turn that started has now ended", not "the panel looks idle".
+	 *
+	 * Waiting a fixed few seconds and then trusting `!busy` raced the model: on CPU-only
+	 * inference the Stop button has not appeared yet several seconds in, so the loop declared
+	 * the turn over before it began and the run failed on a phase that simply had not happened.
+	 * Measured on the bundled 3B engine, a first tool call took 51s. Requiring `busy` to have
+	 * been true at least once removes the guess entirely - and costs nothing when the model is
+	 * fast, because the loop still exits on the same tick the turn actually ends.
+	 */
 	const seen = [];
+	let everBusy = false;
 	for (let i = 0; i < 150; i++) {
 		await sleep(1200);
 		strip = JSON.parse(await panel.eval(readStrip));
@@ -134,7 +148,8 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 			log(`   phase "${strip.phase}": ${strip.label}  [${strip.meta}]`);
 		}
 		const busy = await panel.eval('return !document.getElementById("stop").hidden');
-		if (!busy && i > 3) break;
+		if (busy) { everBusy = true; }
+		if (everBusy && !busy) break;
 	}
 
 	const recorded = JSON.parse(await panel.eval(READ_RECORDER));
@@ -213,7 +228,11 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 	`);
 	log('agent turn started; watching for a tool phase...');
 
+	// Same exit condition as the chat loop above, and it matters more here: the agent's first
+	// tool call is the slowest thing in the test, because it arrives only after the model has
+	// read a prompt carrying all 11 tool definitions.
 	const agentPhases = [];
+	let agentEverBusy = false;
 	for (let i = 0; i < 180; i++) {
 		await sleep(1200);
 		strip = JSON.parse(await panel.eval(readStrip));
@@ -222,7 +241,8 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 			log(`   phase "${strip.phase}": ${strip.label}  [${strip.meta}]`);
 		}
 		const busy = await panel.eval('return !document.getElementById("stop").hidden');
-		if (!busy && i > 3) break;
+		if (busy) { agentEverBusy = true; }
+		if (agentEverBusy && !busy) break;
 	}
 
 	const agentRecorded = JSON.parse(await panel.eval(READ_RECORDER));
