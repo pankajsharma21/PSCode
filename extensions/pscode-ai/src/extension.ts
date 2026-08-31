@@ -14,7 +14,8 @@ import { initSemanticIndex, registerIncrementalIndexing, SemanticIndex } from '.
 import { acceptPendingEdit, discardPendingEdit, reportProviderError, runInlineEdit } from './inline/inlineEdit';
 import { registerProposalProvider } from './inline/proposalDocuments';
 import { createProvider, readSettings } from './providers/registry';
-import { BundledRuntime, bundledRuntime, discoverRuntime, setBundledRuntime } from './runtime/bundledRuntime';
+import { BundledRuntime, bundledRuntime, discoverRuntime, runtimeInstallPath, setBundledRuntime } from './runtime/bundledRuntime';
+import { modelIsInstalled, offerModelDownload, startModelDownload } from './runtime/download';
 import { AIStatusBar } from './statusBar';
 import { log } from './util/logger';
 
@@ -110,6 +111,16 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('pscode.diff.discard', () => discardPendingEdit()),
 		vscode.commands.registerCommand('pscode.showLogs', () => log.show()),
 		vscode.commands.registerCommand('pscode.pickModel', () => pickModel()),
+		vscode.commands.registerCommand('pscode.downloadModel', () => {
+			if (modelIsInstalled(context)) {
+				void vscode.window.showInformationMessage(
+					'The AI model is already installed. Use "--force" with '
+					+ 'extensions/pscode-ai/scripts/fetch-llm-runtime.sh to re-download it.'
+				);
+				return;
+			}
+			startModelDownload(context);
+		}),
 
 		// Settings changes must reach the status bar and the chat header immediately,
 		// otherwise the UI claims a model that is no longer selected.
@@ -123,6 +134,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	enableTrustedFeatures(context, index, chat);
 	revealPanelOnFirstRun(context);
+
+	// After the panel, so a first-run user sees what PSCode is before being asked for 9GB.
+	void offerModelDownload(context);
 
 	log.info('PSCode AI ready');
 }
@@ -230,9 +244,14 @@ function revealPanelOnFirstRun(context: vscode.ExtensionContext): void {
  * back to Ollama, and the status bar says what is missing.
  */
 function startBundledRuntime(context: vscode.ExtensionContext): void {
-	const layout = discoverRuntime(context.extensionPath);
+	const storage = context.globalStorageUri.fsPath;
+	const layout = discoverRuntime(context.extensionPath, storage);
 	if (!layout) {
-		log.warn('No bundled model engine in this build; falling back to the configured provider.');
+		log.warn(
+			'No model engine found. Looked in the extension and in '
+			+ `${runtimeInstallPath(context.extensionPath, storage)}. `
+			+ 'Run "PSCode: Download the AI model", or point pscode.ai.provider at your own server.'
+		);
 		setBundledRuntime(undefined);
 		return;
 	}

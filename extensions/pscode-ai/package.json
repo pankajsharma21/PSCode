@@ -81,6 +81,10 @@
         "title": "PSCode: Select AI Model"
       },
       {
+        "command": "pscode.downloadModel",
+        "title": "PSCode: Download the AI Model"
+      },
+      {
         "command": "pscode.showLogs",
         "title": "PSCode: Show AI Logs"
       },

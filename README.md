@@ -342,16 +342,20 @@ Two rules keep that from becoming a nuisance:
 
 Turn the whole thing off with `pscode.ai.semanticAutoUpdate`.
 
-### The model ships with the editor
-PSCode does not ask you to install a model server. It carries llama.cpp's `llama-server` and a
-quantised Qwen2.5-Coder 3B inside the package, starts the engine when a window opens, and kills it
-when the window closes. Installing the editor is the whole setup.
+### PSCode owns the model process
+PSCode does not ask you to install or run a model server. It fetches llama.cpp's `llama-server` and
+a quantised Qwen2.5-14B once, then starts the engine when a window opens and kills it when the
+window closes. There is no daemon to remember, no port to configure, nothing to keep running.
 
-That is a deliberate trade of installer size for a promise: **the editor cannot be broken by
-something outside it.** Depending on Ollama meant the AI silently stopped working whenever the
-daemon was not running, was upgraded, or no longer had the model the settings named — three
-failure modes that all look identical from inside the editor, and none of which are the editor's
-fault or within its power to fix.
+The promise being bought is that **the editor cannot be broken by something outside it.** Depending
+on Ollama meant the AI silently stopped working whenever the daemon was not running, was upgraded,
+or no longer had the model the settings named — three failure modes that look identical from inside
+the editor, and none of which are the editor's fault or within its power to fix.
+
+The weights are fetched rather than shipped, which is the one part that is not free: there is a
+~9 GB first-run download. It buys a 230 MB installer instead of a 9.5 GB one split into eight
+parts, and it means PSCode redistributes no weights at all — see
+[Download the installer](#1-download-the-installer).
 
 Details that make it hold up:
 
@@ -379,10 +383,10 @@ Details that make it hold up:
 Nothing above the provider interface knows any of this happened: the engine speaks the OpenAI API,
 so it arrived as one new `LLMProvider` and no change to chat, inline edit or the agent loop.
 
-### What is bundled, and under what licence
-Everything in `extensions/pscode-ai/runtime/` is redistributed, so a `NOTICE` file is written
-beside the weights by the fetch script — generated from the same variables that downloaded them,
-so it cannot describe a model other than the one actually present.
+### What gets fetched, and under what licence
+PSCode ships none of this — the fetch script pulls each piece from its publisher and writes a
+`NOTICE` beside the weights, generated from the same variables that did the downloading, so it
+cannot describe a model other than the one actually present.
 
 | Component | Licence |
 |---|---|
@@ -390,8 +394,9 @@ so it cannot describe a model other than the one actually present.
 | `Qwen2.5-14B-Instruct` Q4_K_M | Apache-2.0 |
 | `nomic-embed-text-v1.5` f16 | Apache-2.0 |
 
-If you point `CHAT_REPO` at a different model, check its licence first — Qwen2.5 mixes
-`apache-2.0` and `qwen-research` across sizes, and only the former can ship in an installer:
+All three are permissive, which keeps the door open to bundling them again later. If you point
+`CHAT_REPO` at a different model, check its licence first — Qwen2.5 mixes `apache-2.0` and
+`qwen-research` across sizes, and the difference is invisible in the filename:
 
 ```bash
 curl -s https://huggingface.co/api/models/<repo> | jq .cardData.license
@@ -426,32 +431,26 @@ service was stopped, upgraded, or holding a different model than the settings ex
 
 ### 1. Download the installer
 
-Both installers are attached to the [latest release][releases]. **The repository is private, so a
-plain `wget` of an asset URL will not work** — use the authenticated GitHub CLI.
-
-**They arrive in parts.** Shipping the model makes the `.deb` 2.3 GiB and the tarball 2.5 GiB, and
-a GitHub release asset must be under 2 GiB (`HTTP 422: size must be less than 2147483648`). So each
-installer is split and you join it back — `cat` is enough, the parts are in order:
+Attached to the [latest release][releases]. **The repository is private, so a plain `wget` of an
+asset URL will not work** — use the authenticated GitHub CLI:
 
 ```bash
-# the .deb
-gh release download --repo pankajsharma21/PSCode --pattern 'pscode_*.deb.part*' --pattern 'SHA256SUMS'
-cat pscode_*.deb.part* > pscode_1.136.0_amd64.deb
-
-# or the tarball
-gh release download --repo pankajsharma21/PSCode --pattern 'PSCode-linux-x64-*.tar.gz.part*' --pattern 'SHA256SUMS'
-cat PSCode-linux-x64-*.tar.gz.part* > PSCode-linux-x64-1.136.0.tar.gz
-```
-
-Check the join before installing 2 GiB of weights — a truncated download otherwise fails much
-later, as a model that will not load:
-
-```bash
+gh release download --repo pankajsharma21/PSCode --pattern 'pscode_*_amd64.deb'   # or
+gh release download --repo pankajsharma21/PSCode --pattern 'PSCode-linux-x64-*.tar.gz'
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
-Without a tag `gh` takes the latest release, which is what you want. Pass one (`gh release
-download v1.136.0-2 …`) only to pin an older build.
+Without a tag `gh` takes the latest release, which is what you want.
+
+**The installer is ~230 MB and does not contain the model.** PSCode fetches the engine and weights
+from their publishers the first time you open the AI panel — one download, about 9 GB, and it goes
+into the editor's own storage rather than the app directory, so it needs no root. Two reasons it
+works this way rather than shipping them:
+
+- a GitHub release asset must be under 2 GiB, and a bundled installer is 9.5 GB — it would arrive
+  as eight parts you had to join by hand
+- shipping weights means redistributing them, and that is a licence question that changes with
+  every model. Fetching from the publisher means PSCode redistributes nothing
 
 [releases]: https://github.com/pankajsharma21/PSCode/releases/latest
 
@@ -550,7 +549,42 @@ field, so it needs network and a working `curl`. It also compares the result aga
 checked into `build/linux/debian/dep-lists.ts` and **fails the build if they differ** — that guard
 is deliberate, so if you change what gets bundled, update that list rather than disabling it.
 
-### 3. Use it
+### 3. First run — get the model
+
+Open PSCode and the AI panel (<kbd>Ctrl</kbd>+<kbd>L</kbd>). The status bar reads
+**`AI model not installed`**; click it, or run **PSCode: Download the AI Model**, and the download
+starts in a terminal so you can watch it and stop it. It is resumable — re-run it and it picks up
+where it left off. Reload the window when it finishes.
+
+```
+Engine (llama.cpp b10679):
+  downloading llama-b10679-bin-ubuntu-x64.tar.gz
+  installed llama-server + 18 shared libraries
+Chat model:
+  shard 1/3: qwen2.5-14b-instruct-q4_k_m-00001-of-00003.gguf
+  shard 2/3: qwen2.5-14b-instruct-q4_k_m-00002-of-00003.gguf
+  shard 3/3: qwen2.5-14b-instruct-q4_k_m-00003-of-00003.gguf
+  joining 3 shards
+  joined into chat.gguf (8.4G)
+Chat template:
+  fetched from Qwen/Qwen2.5-14B-Instruct (2507 chars, tool-call section present)
+Embedding model:
+  already present: embed.gguf (262M)
+
+Runtime ready in ~/.config/PSCode/User/globalStorage/pscode.pscode-ai/runtime (8.7G).
+```
+
+Prefer to do it from a checkout, or script it for several machines? Same script, and it takes a
+target:
+
+```bash
+extensions/pscode-ai/scripts/fetch-llm-runtime.sh --target=<dir>
+```
+
+**You do not have to use our model.** Set `pscode.ai.provider` to `ollama`, `openai-compatible` or
+`anthropic` and PSCode never downloads anything — see [Bring your own model](#bring-your-own-model).
+
+### 4. Use it
 
 | Shortcut | Action |
 |---|---|
@@ -565,13 +599,17 @@ From the command palette (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>):
 | **PSCode: Open AI Chat** | Reveal the panel |
 | **PSCode: New Chat** | Start a fresh conversation |
 | **PSCode: Select AI Model** | Pick from what the server actually has |
+| **PSCode: Download the AI Model** | Fetch the engine and weights (~9GB, resumable) |
 | **PSCode: Restore Checkpoint** | Undo an agent turn — reverts every file it changed |
 | **PSCode: Build Semantic Index** | Index the workspace for `@codebase` |
 | **PSCode: Clear Semantic Index** | Delete the index |
 | **PSCode: Show AI Logs** | The extension log, including every approval |
 
 The status bar shows the live model and turns red when the server is unreachable — click it to
-switch models from whatever the server reports it has.
+switch models from whatever the server reports it has. Before the first download it reads
+**`AI model not installed`** in amber instead, and clicking it starts the download: naming a model
+that was never fetched, and then going red because nothing answers, reads as a broken editor rather
+than an unfinished setup.
 
 **In an untrusted folder, chat works and Agent does not.** `pscode-ai` declares
 `untrustedWorkspaces.supported = "limited"`: Chat has no tools and cannot touch the workspace, so
@@ -713,8 +751,8 @@ The provider layer is exercised against a **live local model**, not a mock — t
 here (a stream that never terminates, tool arguments in the wrong shape, an unhelpful error on a
 dead port) are precisely the ones a mocked socket cannot reproduce.
 
-The engine that ships in the box is tested the same way, and its test is about *lifecycle* rather
-than answers — that PSCode owns the process is the claim worth defending:
+The engine PSCode fetches is tested the same way, and its test is about *lifecycle* rather than
+answers — that PSCode owns the process is the claim worth defending:
 
 ```bash
 ./scripts/fetch-llm-runtime.sh

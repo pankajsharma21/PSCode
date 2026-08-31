@@ -38,14 +38,50 @@ interface RuntimeManifest {
 }
 
 /**
- * Locates the bundled runtime, or returns undefined when it was never fetched.
+ * Where the engine and weights may live, most-specific first.
  *
- * Undefined is a normal state, not a broken install: a source checkout does not carry a 2GB model
- * (`scripts/fetch-llm-runtime.sh` puts it there, and git ignores it), so a developer who has not
- * run that script still gets a working editor - just one that needs an endpoint in settings.
+ * Two locations, because a packaged install cannot use one:
+ *
+ *  - `<extension>/runtime` is the source-checkout and bundled-build case. Writable there.
+ *  - `<globalStorage>/runtime` is where a packaged install puts them, because the app directory is
+ *    `/usr/share/pscode/...` and root-owned - a first-run download into it would need sudo, which
+ *    is not a thing an editor should ask for to answer a question.
+ *
+ * The app directory is checked first so a build that genuinely bundles weights keeps using its
+ * own, and a user download never silently shadows it.
  */
-export function discoverRuntime(extensionPath: string): RuntimeLayout | undefined {
-	const root = join(extensionPath, 'runtime');
+export function runtimeSearchPaths(extensionPath: string, storagePath?: string): string[] {
+	const paths = [join(extensionPath, 'runtime')];
+	if (storagePath) {
+		paths.push(join(storagePath, 'runtime'));
+	}
+	return paths;
+}
+
+/** Where a download should go: the first location that is not inside the read-only app directory. */
+export function runtimeInstallPath(extensionPath: string, storagePath?: string): string {
+	return storagePath ? join(storagePath, 'runtime') : join(extensionPath, 'runtime');
+}
+
+/**
+ * Locates the engine and weights, or returns undefined when they were never fetched.
+ *
+ * Undefined is a normal state, not a broken install: neither a source checkout nor the shipped
+ * installer carries a 9GB model, so this returns undefined until either
+ * `scripts/fetch-llm-runtime.sh` or the in-editor download has run. Chat still works if an
+ * endpoint is configured, and the status bar says what is missing.
+ */
+export function discoverRuntime(extensionPath: string, storagePath?: string): RuntimeLayout | undefined {
+	for (const candidate of runtimeSearchPaths(extensionPath, storagePath)) {
+		const found = discoverRuntimeAt(candidate);
+		if (found) {
+			return found;
+		}
+	}
+	return undefined;
+}
+
+function discoverRuntimeAt(root: string): RuntimeLayout | undefined {
 	const binDir = join(root, 'bin');
 	if (!existsSync(join(binDir, 'llama-server'))) {
 		return undefined;

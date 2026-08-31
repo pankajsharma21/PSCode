@@ -3,3 +3,9 @@ src/**
 tsconfig.json
 **/*.map
 **/*.ts
+
+# The engine and weights are ~9GB and are NOT shipped. They are fetched on first run into the
+# editor's globalStorage, which is writable - unlike the app directory of a packaged install.
+# scripts/ is deliberately NOT ignored: the fetch script has to travel with the extension, or a
+# packaged install has no way to get the model.
+runtime/**

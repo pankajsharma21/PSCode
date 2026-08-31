@@ -8,6 +8,7 @@
 
 import * as vscode from 'vscode';
 import { createProvider, readSettings } from './providers/registry';
+import { bundledRuntime } from './runtime/bundledRuntime';
 import { log } from './util/logger';
 
 export class AIStatusBar implements vscode.Disposable {
@@ -24,6 +25,32 @@ export class AIStatusBar implements vscode.Disposable {
 
 	/** Re-reads settings, then checks reachability in the background. */
 	refresh(): void {
+		/*
+		 * "The model is not downloaded yet" has to be its own state, said first.
+		 *
+		 * `readSettings()` falls back to the Ollama provider when there is no local runtime, which
+		 * is the right runtime behaviour but the wrong thing to *display*: the status bar ended up
+		 * naming a model the user had never installed, and then going red because nothing was
+		 * listening on 11434. That reads as a broken editor rather than an unfinished setup, so
+		 * this case is detected before settings are trusted for display, and the click offers the
+		 * download instead of a model picker.
+		 */
+		const wantsBundled = vscode.workspace
+			.getConfiguration('pscode').get<string>('ai.provider', 'bundled') === 'bundled';
+		if (wantsBundled && !bundledRuntime()) {
+			if (this.probe) {
+				clearTimeout(this.probe);
+				this.probe = undefined;
+			}
+			this.item.text = '$(cloud-download) AI model not installed';
+			this.item.tooltip = 'PSCode AI — the model has not been downloaded yet (~9GB, one time).'
+				+ '\nClick to download it, or set "pscode.ai.provider" to use your own server.';
+			this.item.command = 'pscode.downloadModel';
+			this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+			return;
+		}
+		this.item.command = 'pscode.pickModel';
+
 		const settings = readSettings();
 		this.item.text = `$(sparkle) ${settings.model}`;
 		this.item.tooltip = settings.provider === 'bundled'
