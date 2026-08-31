@@ -73,43 +73,33 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 	// see the chat-mode phases it asserts on.
 	await panel.eval(`
 	  document.getElementById('new-chat').click();
-	  document.querySelector('.mode[data-mode="chat"]').click();
 	  return true;
 	`);
 	await sleep(1000);
 	await panel.eval(RESET_RECORDER);
-	check(await panel.eval('return document.querySelector(".mode.active")?.dataset.mode === "chat"'),
-		'reset to Chat mode before starting');
 
 	/*
-	 * The mode indicator is the fix for the one recurring confusion in this UI - after typing a
-	 * character, it used to be the case that nothing on screen said whether Send would answer a
-	 * question or edit your files. Assert it here so a future change cannot quietly remove it.
+	 * There is no mode switch any more, and its absence is the assertion.
+	 *
+	 * Two rounds of making the Chat/Agent labels clearer did not stop people asking about it,
+	 * because the problem was being asked to choose at all. The route is now read from the
+	 * message (routing.ts), so what the panel owes the user is not "which mode am I in" but
+	 * "can this thing touch my files" - one standing sentence that cannot vanish when they type.
 	 */
-	const chatMode = JSON.parse(await panel.eval(`
+	const ui = JSON.parse(await panel.eval(`
 	  document.getElementById('composer').value = 'fix the tax rounding bug';
 	  return JSON.stringify({
-	    hint: document.getElementById('mode-hint').innerText,
+	    modeButtons: document.querySelectorAll('.mode').length,
+	    hint: document.getElementById('capability-hint').innerText,
 	    send: document.getElementById('send').textContent,
 	  });
 	`));
-	check(/CHAT/.test(chatMode.hint) && /cannot edit/i.test(chatMode.hint),
-		'Chat mode says it cannot edit, with text typed', chatMode.hint);
-	check(chatMode.send === 'Send', 'Chat mode button reads "Send"', chatMode.send);
-
-	const agentMode = JSON.parse(await panel.eval(`
-	  document.querySelector('.mode[data-mode="agent"]').click();
-	  return JSON.stringify({
-	    hint: document.getElementById('mode-hint').innerText,
-	    send: document.getElementById('send').textContent,
-	  });
-	`));
-	check(/AGENT/.test(agentMode.hint) && /edits files/i.test(agentMode.hint),
-		'Agent mode says it edits files', agentMode.hint);
-	check(agentMode.send === 'Run task', 'Agent mode button reads "Run task"', agentMode.send);
+	check(ui.modeButtons === 0, 'there is no Chat/Agent switch to operate', `${ui.modeButtons} found`);
+	check(/edits files/i.test(ui.hint), 'the panel states that it can edit files, with text typed', ui.hint);
+	check(/diff/i.test(ui.hint), 'and that a diff comes first', ui.hint);
+	check(ui.send === 'Send', 'one send verb, because there is one thing to press', ui.send);
 
 	await panel.eval(`
-	  document.querySelector('.mode[data-mode="chat"]').click();
 	  document.getElementById('composer').value = '';
 	  return true;
 	`);
@@ -162,6 +152,22 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 	check(recorded.some(r => r.label && /waiting for/i.test(r.label)), 'the waiting label names the model',
 		recorded.find(r => r.phase === 'waiting')?.label);
 	check(phases[phases.length - 1] === 'done', 'the last thing posted is activityDone', JSON.stringify(phases.slice(-3)));
+
+	/*
+	 * The recovery path, and the reason the router is allowed to be a heuristic at all.
+	 *
+	 * Routing by phrasing will sometimes read an instruction as a question. That is survivable
+	 * only because every answer carries a one-click way to run it again with tools - so if this
+	 * button ever stops appearing, the heuristic silently becomes a dead end for anyone whose
+	 * phrasing it does not recognise.
+	 */
+	const offer = JSON.parse(await panel.eval(`
+	  const b = document.querySelector('.tools-offer button');
+	  return JSON.stringify({ present: !!b, text: b ? b.textContent : null, title: b ? b.title : null });
+	`));
+	check(offer.present, 'an answered turn offers to retry with tools', offer.text);
+	check(/tools/i.test(offer.text || ''), 'the button says what it will do', offer.text);
+	check(/diff/i.test(offer.title || ''), 'and its tooltip promises a diff first', (offer.title || '').slice(0, 60));
 
 	/*
 	 * The clock is tested directly rather than through a real turn: with a warm prompt the model
@@ -219,8 +225,12 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 	`);
 	await sleep(1200);
 	await panel.eval(RESET_RECORDER);
+	/*
+	 * Phrasing is what selects the tool path now, so the prompt has to open with an imperative
+	 * the router recognises - "read ..." does, and it is still a read-only task. If this ever
+	 * stops reaching a tool phase, check routing-smoke.js before suspecting the agent loop.
+	 */
 	await panel.eval(`
-	  document.querySelector('.mode[data-mode="agent"]').click();
 	  const c = document.getElementById('composer');
 	  c.value = 'Read a source file in this workspace and tell me in one sentence what it does. Do not edit anything.';
 	  document.getElementById('send').click();

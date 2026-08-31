@@ -28,15 +28,13 @@
 	const activity = document.getElementById('activity');
 	const activityLabel = document.getElementById('activity-label');
 	const activityMeta = document.getElementById('activity-meta');
-	const modeHint = document.getElementById('mode-hint');
-	const modeHintName = document.getElementById('mode-hint-name');
-	const modeHintText = document.getElementById('mode-hint-text');
+	const capabilityHint = document.getElementById('capability-hint');
+	const capabilityHintText = document.getElementById('capability-hint-text');
 	const restricted = document.getElementById('restricted');
 	const trustButton = document.getElementById('trust-button');
-	const agentButton = document.getElementById('mode-agent');
 
-	let mode = 'chat';
-	/** Set from the status message. Agent mode is unavailable while this is false. */
+
+	/** Set from the status message. Editing files is unavailable while this is false. */
 	let trusted = true;
 	/** Live activity state. The clock ticks here so the extension only posts phase changes. */
 	let activityState = null;
@@ -405,49 +403,50 @@
 	}
 
 	/*
-	 * Which mode is active, stated where the eye already is and in a place that cannot vanish.
+	 * There was a Chat/Agent switch here, and two rounds of making it clearer did not fix it.
 	 *
-	 * The pill in the header and the composer placeholder were the only signals, and the
-	 * placeholder disappears the moment you type - so after typing a single character there was
-	 * nothing on screen saying whether pressing Send would answer a question or edit your files.
-	 * That is the whole reason "it found the bug but never offered to change anything" was a
-	 * recurring surprise: the mode was right there in the corner, and invisible.
+	 * First the only signals were a pill in the header and the composer placeholder, and the
+	 * placeholder disappears the moment you type - so after one character nothing on screen said
+	 * whether Send would answer a question or edit your files. Stating the mode permanently above
+	 * the composer fixed that, and the switch was still the thing people asked about, because the
+	 * problem was never the label. It was being asked to choose at all.
+	 *
+	 * So the choice moved into routing.ts and the switch is gone. What remains here is a standing
+	 * statement of what the panel can do, and a "Retry with tools" button on any answer where the
+	 * router may have guessed wrong.
 	 */
 	/*
 	 * Restricted Mode, said once and kept on screen.
 	 *
 	 * The old behaviour was that the whole panel simply did not exist in an untrusted folder -
 	 * the extension declared `untrustedWorkspaces.supported: false`, so it never activated and the
-	 * side bar showed an empty pane with nothing to click and nothing to read. Chat has no tools,
-	 * so it can run here; Agent can edit files and run commands, so it cannot. Saying which is
+	 * side bar showed an empty pane with nothing to click and nothing to read. Answering needs no
+	 * tools, so it works here; editing files and running commands does not. Saying which is
 	 * which, with the fix one click away, is the whole point.
 	 */
 	function paintTrust() {
 		restricted.hidden = trusted;
-		agentButton.disabled = !trusted;
-		agentButton.title = trusted
-			? ''
-			: 'Agent mode needs a trusted folder: it can edit files and run commands.';
-		if (!trusted && mode === 'agent') {
-			selectMode('chat');
-		}
+		paintCapability();
 	}
 
-	function paintMode() {
-		const agent = mode === 'agent';
-		modeHint.dataset.mode = mode;
-		modeHintName.textContent = agent ? 'AGENT' : 'CHAT';
-		// Kept short enough to survive a narrow side bar without ellipsis. The full sentence is
-		// on the title attribute, and the half that must never be truncated - what it can do to
-		// your files - comes first.
-		modeHintText.textContent = agent
-			? ' — reads and edits files, always asks first'
-			: ' — answers only, cannot edit files';
-		modeHint.title = agent
-			? 'Agent mode: PSCode AI can read, search and edit files, and run commands. Every change is shown as a diff with Accept/Reject first, and the whole run can be undone from its checkpoint.'
-			: 'Chat mode: PSCode AI can only answer. It has no tools and cannot touch your workspace. Use Apply on a code block to review a change as a diff.';
-		// The verb on the button is the last thing read before committing to an action.
-		sendButton.textContent = agent ? 'Run task' : 'Send';
+	/*
+	 * There is no mode to report any more, so this line answers the question the mode readout was
+	 * really there to answer: can this thing change my files, yes or no. It states a standing fact
+	 * about the workspace rather than a setting the user has to track, and it cannot vanish the way
+	 * the composer placeholder did.
+	 */
+	function paintCapability() {
+		capabilityHint.dataset.trusted = String(trusted);
+		// Kept short enough to survive a narrow side bar without the ellipsis eating the half that
+		// matters. The full sentence is on the title attribute.
+		capabilityHintText.textContent = trusted
+			? 'Answers questions · edits files only after a diff'
+			: 'Answers only — folder not trusted, cannot edit files';
+		capabilityHint.title = trusted
+			? 'Ask a question and PSCode answers. Tell it to change something and it reads, edits and '
+				+ 'runs commands - every change shown as a diff with Accept/Reject first, and the whole '
+				+ 'run revertable from its checkpoint. You do not pick which; PSCode reads it from what you typed.'
+			: 'This folder is not trusted, so PSCode can only answer. Trust it to allow edits.';
 	}
 
 	/* -------------------------------------------------------------- activity */
@@ -541,18 +540,51 @@
 		composer.disabled = false; // Let the user keep typing the next question.
 	}
 
-	/* -------------------------------------------------------------- outgoing */
-
-	function send() {
-		const text = composer.value.trim();
-		if (!text || busy) {
-			return;
+	/*
+	 * The recovery path for a message the router read as a question when it was a task.
+	 *
+	 * Rendered after the answer, not instead of it: on this hardware the answer arrives in about
+	 * 11s and a tool run takes minutes, so withholding the fast reply to be safe would cost every
+	 * correctly-routed question a minute. The prompt is carried on the button rather than re-read
+	 * from the composer, which by now holds whatever the user typed next.
+	 *
+	 * Only one offer is kept on screen - the previous one is dropped when a new answer lands, so
+	 * the transcript does not accumulate stale buttons pointing at old questions.
+	 */
+	function addToolsOffer(text) {
+		for (const stale of transcript.querySelectorAll('.tools-offer')) {
+			stale.remove();
 		}
-		composer.value = '';
-		vscode.postMessage({ type: 'send', text, mode });
+		const row = document.createElement('div');
+		row.className = 'tools-offer';
+		const button = document.createElement('button');
+		button.className = 'link';
+		button.textContent = '\u27f3 Retry with tools';
+		button.title = 'Send this again and let PSCode read and edit files. Slower, and every change '
+			+ 'is shown as a diff you accept or reject.';
+		button.addEventListener('click', () => {
+			row.remove();
+			send(text, 'work');
+		});
+		row.appendChild(button);
+		transcript.appendChild(row);
+		scrollToBottom();
 	}
 
-	sendButton.addEventListener('click', send);
+	/* -------------------------------------------------------------- outgoing */
+
+	function send(text, forceRoute) {
+		const body = (text ?? composer.value).trim();
+		if (!body || busy) {
+			return;
+		}
+		if (text === undefined) {
+			composer.value = '';
+		}
+		vscode.postMessage({ type: 'send', text: body, forceRoute });
+	}
+
+	sendButton.addEventListener('click', () => send());
 	stopButton.addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
 	newChatButton.addEventListener('click', () => vscode.postMessage({ type: 'newChat' }));
 	modelButton.addEventListener('click', () => vscode.postMessage({ type: 'pickModel' }));
@@ -565,26 +597,6 @@
 			send();
 		}
 	});
-
-	function selectMode(next) {
-		if (next === 'agent' && !trusted) {
-			return;
-		}
-		mode = next;
-		for (const other of document.querySelectorAll('.mode')) {
-			const active = other.dataset.mode === next;
-			other.classList.toggle('active', active);
-			other.setAttribute('aria-checked', String(active));
-		}
-		composer.placeholder = next === 'agent'
-			? 'Describe a task — PSCode AI will read and edit files…'
-			: 'Ask about your code…  (Enter to send, Shift+Enter for a new line)';
-		paintMode();
-	}
-
-	for (const button of document.querySelectorAll('.mode')) {
-		button.addEventListener('click', () => selectMode(button.dataset.mode));
-	}
 
 	trustButton.addEventListener('click', () => vscode.postMessage({ type: 'manageTrust' }));
 
@@ -649,7 +661,9 @@
 
 			case 'assistantStart':
 				streamRaw = '';
-				streamTarget = addTurn('assistant', message.mode === 'agent' ? 'PSCode AI · agent' : 'PSCode AI');
+				streamTarget = addTurn('assistant', message.route === 'work'
+					? 'PSCode AI · working in your files'
+					: 'PSCode AI');
 				streamTarget.classList.add('cursor');
 				break;
 
@@ -781,6 +795,10 @@
 				renderSessions(message.sessions, message.currentId);
 				break;
 
+			case 'offerTools':
+				addToolsOffer(message.text);
+				break;
+
 			case 'notice':
 				addBanner('notice', message.message);
 				break;
@@ -807,7 +825,7 @@
 		}
 	});
 
-	paintMode();
+	paintCapability();
 	vscode.postMessage({ type: 'ready' });
 	composer.focus();
 })();

@@ -7,8 +7,9 @@
  *  the logs showed nothing at all, because an extension that never activates never logs.
  *
  *  So the assertions are about what an untrusted folder must still show: the panel renders, it
- *  says which mode it is in and why, Agent cannot be selected, and the way out is one click away.
- *  The last one matters most - a refusal with no route to trust is the same dead end as before.
+ *  says plainly that it cannot edit files and why, a task typed here is answered rather than
+ *  thrown away, and the way out is one click. The last one matters most - a refusal with no route
+ *  to trust is the same dead end as before.
  *
  *  Trust is deliberately NOT granted here. Granting it writes into
  *  `~/.pscode-shared/sharedStorage/state.vscdb`, which is shared across every profile and is not
@@ -35,23 +36,33 @@ const check = (ok, name, detail) => {
 
 const READ_PANEL = `
   const restricted = document.getElementById('restricted');
-  const agent = document.getElementById('mode-agent');
+  const hint = document.getElementById('capability-hint');
   return JSON.stringify({
     restrictedVisible: !restricted.hidden,
     notice: restricted.innerText.replace(/\\s+/g, ' ').trim(),
-    agentDisabled: agent.disabled,
-    agentTitle: agent.title,
-    mode: document.getElementById('mode-hint-name').textContent,
+    hint: hint.innerText.replace(/\\s+/g, ' ').trim(),
+    hintTrusted: hint.dataset.trusted,
+    modeButtons: document.querySelectorAll('.mode').length,
     sendVerb: document.getElementById('send').textContent,
   });
 `;
 
-const CLICK_AGENT = `
-  document.getElementById('mode-agent').click();
-  return JSON.stringify({
-    mode: document.getElementById('mode-hint-name').textContent,
-    active: document.querySelector('.mode.active').dataset.mode,
-  });
+/*
+ * Typing a task into an untrusted folder is the case that used to lose work: the send was refused
+ * outright and the text was gone. It must now be answered instead, with a line saying why - so the
+ * probe sends an instruction and reads back what the panel said about it.
+ */
+const SEND_A_TASK = `
+  const c = document.getElementById('composer');
+  c.value = 'fix the off-by-one bug in cart.ts';
+  document.getElementById('send').click();
+  return true;
+`;
+
+// addBanner() sets className to the kind itself, so these are the two classes it can produce.
+const READ_BANNERS = `
+  const els = Array.from(document.querySelectorAll('.notice, .error'));
+  return els.map(e => e.innerText.replace(/\\s+/g, ' ').trim()).join(' | ');
 `;
 
 (async () => {
@@ -72,15 +83,22 @@ const CLICK_AGENT = `
 
 	check(state.restrictedVisible, 'Restricted Mode is stated in the panel', state.notice);
 	check(/Trust this folder/i.test(state.notice), 'the notice offers a one-click way out');
-	check(state.agentDisabled, 'Agent mode cannot be selected');
-	check(/trusted folder/.test(state.agentTitle), 'the Agent button says why', state.agentTitle);
-	check(state.mode === 'CHAT', 'the mode line reads CHAT', state.mode);
-	check(state.sendVerb === 'Send', 'the button keeps the chat verb', state.sendVerb);
+	check(state.modeButtons === 0, 'there is no mode switch to be disabled', `${state.modeButtons} found`);
+	check(state.hintTrusted === 'false', 'the capability line knows the folder is untrusted', state.hintTrusted);
+	check(/answers only/i.test(state.hint) && /not trusted/i.test(state.hint),
+		'it says it can only answer, and why', state.hint);
+	check(state.sendVerb === 'Send', 'one send verb, as everywhere else', state.sendVerb);
 
-	// A disabled button is a hint, not a guarantee. Clicking it must change nothing.
-	const after = JSON.parse(await panel.eval(CLICK_AGENT));
-	check(after.mode === 'CHAT' && after.active === 'chat',
-		'clicking Agent while untrusted leaves the panel in Chat', `${after.mode}/${after.active}`);
+	/*
+	 * The real guarantee is in the extension host, not in the panel: a task typed here must be
+	 * answered rather than refused, and the reason must be on screen. This is the case that used
+	 * to discard what the user had typed.
+	 */
+	await panel.eval(SEND_A_TASK);
+	await sleep(2500);
+	const banners = await panel.eval(READ_BANNERS);
+	check(/trusted folder/i.test(banners), 'a task typed while untrusted explains itself', banners.slice(0, 120));
+	check(/answering instead/i.test(banners), 'and is answered rather than thrown away', banners.slice(0, 120));
 
 	// A trusted-only command must refuse out loud rather than doing nothing.
 	await runCommand(workbench, 'PSCode: Edit Selection with AI');

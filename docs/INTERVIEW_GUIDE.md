@@ -54,15 +54,17 @@ it.
    until I press Accept." Then press **Discard** — showing the reject path is more convincing
    than showing accept. *(90s)*
 
-4. **Agent mode** — switch to Agent, give it a real task: *"find where the retry limit is defined
+4. **A real task** — no mode to switch, just type it: *"find where the retry limit is defined
    and raise it to five"*. Narrate the trace as it appears: "it searched, it read, now it wants to
-   edit — and here's the approval prompt with the exact diff." *(120s)*
+   edit — and here's the approval prompt with the exact diff." Worth saying out loud that you never
+   picked a mode: the imperative is what selected the tool path. *(120s)*
 
-5. **The failure case** — this is the step that separates you. Open an untrusted folder and send
-   a message. Chat answers normally; the panel says `RESTRICTED MODE — chat only, this folder is
-   not trusted`, Agent is disabled, and the reason is one line away from the fix. Say: "Agent mode
-   can run commands, so opening a repository must never be enough to run its code. Chat has no
-   tools, so it still works. The editor degrades to what is safe instead of disappearing."
+5. **The failure case** — this is the step that separates you. Open an untrusted folder and type
+   a *task*, not a question. It gets answered anyway, with a line saying why, and the panel reads
+   `RESTRICTED MODE — answers only, this folder is not trusted` with the fix one click away. Say:
+   "The tools can run commands, so opening a repository must never be enough to run its code.
+   Answering needs no tools, so it still works — and notice it didn't throw away what I typed. The
+   editor degrades to what is safe instead of disappearing."
 
    If you want a second one: `ps` the engine PSCode started, kill it, and send another message —
    the next turn restarts it, because the editor owns that process rather than depending on it.
@@ -84,8 +86,8 @@ Answer immediately and specifically. Never hedge.
 > and three files where "VS Code" appears in visible UI text. I also deleted the bundled Copilot
 > extension — 4,122 files, about 87% of the repo.
 >
-> Everything AI is mine, and I kept it in one directory — `extensions/pscode-ai/`, 6,046 lines
-> across 26 TypeScript modules — precisely so this question has a clean answer. Happy to walk any
+> Everything AI is mine, and I kept it in one directory — `extensions/pscode-ai/`, 6,216 lines
+> across 27 TypeScript modules — precisely so this question has a clean answer. Happy to walk any
 > file in it."
 
 Then offer `git log` or `git diff` against upstream. Being the one to offer proof reads as
@@ -339,7 +341,7 @@ Volunteering a weakness reads as senior. Being caught hiding one reads as the op
 - [ ] Can state the 8 modified upstream files from memory
 - [ ] Can draw the architecture on paper without notes
 - [ ] `git log` presentable — no "wip" or "asdf" commits
-- [ ] Know your own numbers: 6,046 lines, 26 modules, 11 tools, 4 providers, 29 upstream files
+- [ ] Know your own numbers: 6,216 lines, 27 modules, 11 tools, 4 providers, 29 upstream files
 
 ---
 

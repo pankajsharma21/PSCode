@@ -69,28 +69,6 @@ body {
 .dot.ok { background: var(--vscode-charts-green); }
 .dot.bad { background: var(--vscode-errorForeground); }
 
-.mode-switch {
-	display: flex;
-	border: 1px solid var(--vscode-panel-border);
-	border-radius: 4px;
-	overflow: hidden;
-}
-
-.mode {
-	border: 0;
-	background: transparent;
-	color: var(--vscode-descriptionForeground);
-	font-family: inherit;
-	font-size: 11px;
-	padding: 3px 10px;
-	cursor: pointer;
-}
-
-.mode.active {
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-}
-
 /* -------------------------------------------------------------- transcript */
 
 #transcript {
@@ -706,12 +684,12 @@ footer {
 	color: var(--vscode-textLink-activeForeground);
 }
 
-.mode:disabled {
-	opacity: 0.4;
-	cursor: not-allowed;
-}
-
-#mode-hint {
+/*
+ * A standing statement of what the panel can do, not a mode readout. Truncates with an ellipsis
+ * rather than wrapping, because the side bar is narrow and a two-line hint pushes the composer
+ * around every time the trust state changes.
+ */
+#capability-hint {
 	font-size: 10px;
 	letter-spacing: 0.04em;
 	padding: 0 2px 4px;
@@ -721,14 +699,15 @@ footer {
 	text-overflow: ellipsis;
 }
 
-#mode-hint-name {
-	font-weight: 600;
-}
-
-#mode-hint[data-mode="chat"] #mode-hint-name {
-	color: var(--vscode-descriptionForeground);
-}
-
-#mode-hint[data-mode="agent"] #mode-hint-name {
+/* Untrusted is a real limitation, so it is said in the warning colour rather than in grey. */
+#capability-hint[data-trusted="false"] {
 	color: var(--vscode-charts-orange, var(--vscode-notificationsWarningIcon-foreground));
+}
+
+/* Sits under the answer it belongs to, right-aligned so it reads as an afterthought to the
+   reply rather than as part of it. */
+.tools-offer {
+	display: flex;
+	justify-content: flex-end;
+	padding: 2px 4px 8px;
 }

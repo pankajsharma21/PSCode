@@ -14,6 +14,7 @@ import { AGENT_SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT } from '../agent/prompts';
 import { buildContext } from '../context/contextBuilder';
 import { readProjectRules, withProjectRules } from '../context/projectRules';
 import { ChatHistory, newSessionId } from './history';
+import { Route, routeMessage } from './routing';
 import { reportProviderError } from '../inline/inlineEdit';
 import { showProposedDiff } from '../inline/proposalDocuments';
 import { AISettings, createProvider, readSettings } from '../providers/registry';
@@ -21,14 +22,16 @@ import { ChatMessage, ProviderError } from '../providers/types';
 import { toAbortSignal } from '../util/cancellation';
 import { log } from '../util/logger';
 
-type Mode = 'chat' | 'agent';
-
 interface InboundMessage {
 	type: 'send' | 'cancel' | 'newChat' | 'apply' | 'copyDone' | 'pickModel' | 'openSettings'
 	| 'ready' | 'approvalResponse' | 'revealDiff' | 'manageTrust'
 	| 'listSessions' | 'loadSession' | 'deleteSession' | 'restoreCheckpoint';
 	text?: string;
-	mode?: Mode;
+	/**
+	 * Set only by "Retry with tools", which is the recovery path for a message the router sent
+	 * down the answer path when it was really a task. Absent means "you decide".
+	 */
+	forceRoute?: Route;
 	code?: string;
 	/** approvalResponse, loadSession, deleteSession, restoreCheckpoint */
 	id?: string;
@@ -142,7 +145,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				this.publishSessions();
 				break;
 			case 'send':
-				await this.send(message.text ?? '', message.mode ?? 'chat');
+				await this.send(message.text ?? '', message.forceRoute);
 				break;
 			case 'cancel':
 				this.inflight?.cancel();
@@ -250,9 +253,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	/** Used by "Explain selection": seeds and immediately sends a prompt. */
-	async ask(prompt: string, mode: Mode = 'chat'): Promise<void> {
+	async ask(prompt: string, forceRoute?: Route): Promise<void> {
 		await vscode.commands.executeCommand('pscode.chat.focus');
-		await this.send(prompt, mode);
+		await this.send(prompt, forceRoute);
 	}
 
 	publishStatus(): void {
@@ -269,7 +272,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 	/* ------------------------------------------------------------------- send */
 
-	private async send(text: string, mode: Mode): Promise<void> {
+	private async send(text: string, forceRoute?: Route): Promise<void> {
 		const prompt = text.trim();
 		if (!prompt) {
 			return;
@@ -280,20 +283,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		}
 
 		const settings = readSettings();
-		if (mode === 'agent' && !settings.agentEnabled) {
-			this.post({ type: 'error', message: 'Agent mode is disabled in settings ("pscode.agent.enabled").' });
-			return;
-		}
-		// The webview disables the Agent button in Restricted Mode, but the webview is untrusted
-		// input: the decision that matters is this one, made next to the tools.
-		if (mode === 'agent' && !vscode.workspace.isTrusted) {
+
+		/*
+		 * The route used to be a button the user had to press. It is now read from the message,
+		 * because the switch asked people to understand a performance boundary before they could
+		 * type - see routing.ts for the numbers that make the boundary real.
+		 *
+		 * `forceRoute` is only ever set by "Retry with tools", so an explicit correction always
+		 * wins over the guess.
+		 */
+		const decision = forceRoute
+			? { route: forceRoute, reason: 'you asked for tools' }
+			: routeMessage(prompt);
+		let route = decision.route;
+
+		/*
+		 * Tools may be unavailable for reasons that have nothing to do with the message. This used
+		 * to be a hard error that threw the user's message away and told them to go change a
+		 * setting. Now it falls back to answering and says what it did instead: an answer they did
+		 * not quite want beats losing what they typed.
+		 */
+		if (route === 'work' && !settings.agentEnabled) {
+			route = 'answer';
 			this.post({
-				type: 'error',
-				message: 'Agent mode needs a trusted folder - it can edit files and run commands. '
-					+ 'Chat works as normal. Trust this folder to enable it.',
+				type: 'notice',
+				message: 'That looked like a task, but tools are turned off ("pscode.agent.enabled"). Answering instead.',
 			});
-			return;
+		} else if (route === 'work' && !vscode.workspace.isTrusted) {
+			route = 'answer';
+			this.post({
+				type: 'notice',
+				message: 'That looked like a task, but editing files needs a trusted folder. Answering instead - '
+					+ 'trust this folder to let PSCode work in it.',
+			});
 		}
+
+		log.info(`[route] ${route} — ${decision.reason}`);
 
 		this.post({ type: 'userMessage', text: prompt });
 		this.post({ type: 'busy', busy: true });
@@ -324,12 +349,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			};
 			this.conversation.push(userMessage);
 
-			this.post({ type: 'assistantStart', mode });
+			this.post({ type: 'assistantStart', route });
 
-			if (mode === 'agent') {
+			if (route === 'work') {
 				await this.runAgentTurn(settings, source, abort.signal, prompt);
 			} else {
 				await this.runChatTurn(settings, source, abort.signal);
+				/*
+				 * The recovery path for a misrouted task. Offered after the answer rather than
+				 * instead of it, so the fast reply is never withheld waiting on a guess - and it
+				 * carries the original prompt, because by now the composer holds whatever the user
+				 * typed next.
+				 */
+				if (!vscode.workspace.isTrusted || !settings.agentEnabled) {
+					// Nothing to offer: the retry would fall straight back to answering.
+				} else {
+					this.post({ type: 'offerTools', text: prompt });
+				}
 			}
 		} catch (error) {
 			this.reportError(error);
@@ -711,10 +747,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		</button>
 		<span class="spacer"></span>
 		<button id="history-button" class="icon" title="Recent conversations" aria-label="Recent conversations" aria-expanded="false">◴</button>
-		<div class="mode-switch" role="radiogroup" aria-label="Mode">
-			<button class="mode active" data-mode="chat" role="radio" aria-checked="true">Chat</button>
-			<button class="mode" id="mode-agent" data-mode="agent" role="radio" aria-checked="false">Agent</button>
-		</div>
 	</header>
 
 	<div id="history-panel" hidden>
@@ -729,12 +761,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	<main id="transcript" aria-live="polite">
 		<div class="empty" id="empty-state">
 			<h2>PSCode AI</h2>
-			<p>Ask about your code, or switch to <strong>Agent</strong> to let it read and edit files.</p>
+			<p>Ask a question, or tell it what to change. No mode to pick — PSCode reads which
+			one you meant, and nothing is written without showing you a diff first.</p>
 			<ul>
 				<li><kbd>Ctrl</kbd>+<kbd>I</kbd> — edit the selection in place</li>
 				<li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> — add the selection here</li>
 				<li>Type <code>@filename</code> to pull a file into context</li>
-				<li>Agent runs get a <strong>checkpoint</strong> — one click reverts the whole turn</li>
+				<li>Every run that touches files gets a <strong>checkpoint</strong> — one click reverts it</li>
 				<li>Repo conventions in <code>AGENTS.md</code> are sent automatically</li>
 			</ul>
 		</div>
@@ -749,12 +782,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			<span id="activity-meta"></span>
 		</div>
 		<div id="restricted" hidden>
-			<strong>RESTRICTED MODE</strong><span> — chat only, this folder is not trusted. </span>
+			<strong>RESTRICTED MODE</strong><span> — answers only, this folder is not trusted. </span>
 			<button id="trust-button" class="link">Trust this folder</button>
-			<span> to enable Agent, Ctrl+I and @codebase.</span>
+			<span> to let PSCode edit files, and to enable Ctrl+I and @codebase.</span>
 		</div>
-		<div id="mode-hint"><strong id="mode-hint-name"></strong><span id="mode-hint-text"></span></div>
-		<textarea id="composer" rows="3" placeholder="Ask about your code…  (Enter to send, Shift+Enter for a new line)"></textarea>
+		<div id="capability-hint"><span id="capability-hint-text"></span></div>
+		<textarea id="composer" rows="3" placeholder="Ask about your code, or say what to change…  (Enter to send, Shift+Enter for a new line)"></textarea>
 		<div class="actions">
 			<button id="send" class="primary">Send</button>
 			<button id="stop" hidden>Stop</button>

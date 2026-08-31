@@ -56,7 +56,7 @@ a model write to `../../.ssh/id_rsa`. Showing a diff the user can reject.
 
 > **On the fork:** PSCode is a fork of [microsoft/vscode](https://github.com/microsoft/vscode)
 > (MIT). The editor, terminal and extension host are Microsoft's work, not mine. Everything AI
-> in this repo — `extensions/pscode-ai/`, 6,046 lines across 26 TypeScript modules — is mine, and
+> in this repo — `extensions/pscode-ai/`, 6,216 lines across 27 TypeScript modules — is mine, and
 > it is deliberately confined to one directory so the boundary is obvious. See
 > [What I wrote](#what-i-wrote-vs-what-came-from-vs-code).
 
@@ -108,8 +108,8 @@ silently corrupting your work.
 
 With nothing selected, <kbd>Ctrl</kbd>+<kbd>I</kbd> operates on the current line.
 
-### Agent mode
-Switch the panel to **Agent** and the model gets eleven tools:
+### When it works in your files
+When the router reads your message as an instruction, the model gets eleven tools:
 
 | Tool | What it does | Guard |
 |---|---|---|
@@ -177,37 +177,66 @@ The loop is bounded by `pscode.agent.maxIterations` (default 12). When it hits t
 **says so in the transcript** instead of stopping quietly — a silent stop is indistinguishable
 from a finished task, which is how agents end up appearing to lie about their work.
 
-### Two modes, and you can always tell which one you are in
-**Chat** answers. **Agent** does the work. The difference is not a prompt — in Chat mode the model
-is sent no tools at all, so it has no mechanism to touch your workspace:
+### One conversation, no mode to pick
+There is no Chat/Agent switch. You type a question or an instruction, and PSCode decides whether
+the model gets tools:
 
 ```ts
-runChatTurn  → provider.stream({ messages, temperature, maxTokens })
-runAgentTurn → runAgent(…) → provider.stream({ messages, tools: ALL_TOOLS, … })
+route 'answer' → provider.stream({ messages, temperature, maxTokens })
+route 'work'   → runAgent(…) → provider.stream({ messages, tools: ALL_TOOLS, … })
 ```
 
-| | Chat | Agent |
+| | `answer` | `work` |
 |---|---|---|
 | Tools | none | all eleven |
 | Requests | one | a loop, up to `agent.maxIterations` |
 | Can change files | no | yes, each behind Accept / Reject |
 | Checkpoint | — | one per run |
 
-That split is deliberate rather than a missing feature. Running the agent loop for every question
-would cost minutes on a CPU: a 7B model handed tools will call `project_map` and `read_file` before
-answering "what does this function do?", which one request answers in seconds.
+**Why not just always send tools,** the way a cloud-model IDE does? Because the two paths are not
+close on this hardware. Same question, same file in context, bundled 3B engine:
 
-The cost of two modes is forgetting which one you are in — and the fix is not the toggle in the
-corner, because the only other signal used to be the composer placeholder, which vanishes as soon
-as you type. So the mode is stated permanently above the composer and on the button itself:
+| | prompt | time | result |
+|---|---|---|---|
+| no tools | 299 tokens | **11.4s** | answered it |
+| 11 tools | 2,064 tokens | **110.8s** | called `find_symbol` instead of answering |
+
+A cloud model hides that gap; a CPU cannot. So the choice still has to be made — it just should not
+be made by the user, which is what a toggle does.
+
+`src/chat/routing.ts` makes it from the text. Imperatives get tools (`fix the rounding bug`,
+`rename totalPrice`, and the Hinglish forms where the imperative is the last word — `bug fix karo`).
+Question shape does not (`what does this do?`, `bug kaise fix karu?`). Politeness is stripped first,
+so `can you fix the bug?` is read as the instruction it is.
+
+The rules are asymmetric on purpose, because the mistakes are:
+
+- a question misrouted to tools costs a **minute**, with no way back
+- an instruction misrouted to an answer costs **11s** and leaves a **⟳ Retry with tools** button
+
+So ambiguous verbs (`look at`, `check`) stay on the fast path, and every rule has a case in
+`test/routing-smoke.js` — which needs no model and runs in under a second.
 
 ```
-CHAT — answers only, cannot edit files          AGENT — reads and edits files, always asks first
-┌──────────────────────────────┐                ┌──────────────────────────────┐
-│ fix the tax rounding bug     │                │ fix the tax rounding bug     │
-└──────────────────────────────┘                └──────────────────────────────┘
-[ Send ]                                        [ Run task ]
+┌────────────────────────────────────────────┐
+│ YOU   totalPrice kya karta hai?            │
+│ PSCODE AI                          11s     │
+│ Items ka total nikalta hai, par loop mein  │
+│ off-by-one bug hai.                        │
+│                          ⟳ Retry with tools│
+│                                            │
+│ YOU   fix the off-by-one bug               │
+│ PSCODE AI · working in your files          │
+│ ✎ Reading cart.ts                          │
+│ ✎ Editing cart.ts      [Accept] [Reject]   │
+└────────────────────────────────────────────┘
+ Answers questions · edits files only after a diff
+ [ Send ]
 ```
+
+The line under the transcript is a standing fact about the workspace, not a mode readout — in an
+untrusted folder it reads *"Answers only — folder not trusted, cannot edit files"*, and a task
+typed there is **answered with the reason** rather than refused with your text thrown away.
 
 ### Checkpoints — undo a whole agent turn
 Approving each edit protects each change in isolation. It does not protect you from five
@@ -555,7 +584,7 @@ All settings live under `pscode.` in Settings (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
 | `pscode.ai.semanticMaxFiles` | `1500` | Bounds how long an index build can take on a CPU |
 | `pscode.ai.semanticMaxHits` | `6` | Matches sent to the model; each costs context budget |
 | `pscode.ai.semanticAutoUpdate` | `true` | Re-embed a file when it changes. Only ever updates an index that already exists |
-| `pscode.agent.enabled` | `true` | Turns Agent mode off entirely |
+| `pscode.agent.enabled` | `true` | Never send tools; every message is answered |
 | `pscode.agent.maxIterations` | `12` | Tool rounds before the loop stops |
 | `pscode.agent.approveShellCommands` | `true` | **Leave this on** unless you know why you're turning it off |
 | `pscode.agent.approveFileWrites` | `true` | **Leave this on** likewise |
@@ -623,6 +652,23 @@ Full detail: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 ---
 
 ## Testing
+
+Routing is the one piece with no model in it, so it is the one test that runs instantly — and it
+needs to, because it now makes the call the user used to make with a switch. Every rule has a case,
+including the Hinglish imperatives:
+
+```bash
+node extensions/pscode-ai/test/routing-smoke.js
+```
+
+```
+PASS  answer "what does totalPrice do?"        — it is phrased as a question
+PASS  answer "bug kaise fix karu?"             — it is phrased as a question
+PASS  work   "fix the off-by-one bug"          — it opens with "fix", which asks for a change
+PASS  work   "can you fix the off-by-one bug?" — it opens with "fix", which asks for a change
+PASS  work   "cart.ts mein bug fix karo"       — it is phrased as an instruction
+PASS  answer "look at this function"           — no instruction to change anything
+```
 
 The provider layer is exercised against a **live local model**, not a mock — the bugs that matter
 here (a stream that never terminates, tool arguments in the wrong shape, an unhelpful error on a
@@ -741,18 +787,18 @@ your own stored workbench state rather than what a new user sees.
 
 Being precise about this matters more than the line count.
 
-**Mine — `extensions/pscode-ai/`, 6,046 lines, 26 TypeScript modules:**
+**Mine — `extensions/pscode-ai/`, 6,216 lines, 27 TypeScript modules:**
 
 | Area | Files |
 |---|---|
 | Provider layer | `providers/{types,http,bundled,ollama,openaiCompat,anthropic,embeddings,registry}.ts` |
 | Bundled engine | `runtime/{modelServer,bundledRuntime}.ts`, `scripts/fetch-llm-runtime.sh` |
 | Agent | `agent/{agentLoop,tools,prompts,approvals,checkpoints}.ts` |
-| Chat | `chat/{chatViewProvider,history}.ts`, `media/chat.{js,css}` |
+| Chat | `chat/{chatViewProvider,history,routing}.ts`, `media/chat.{js,css}` |
 | Inline edit | `inline/{inlineEdit,proposalDocuments}.ts` |
 | Context | `context/{contextBuilder,projectRules,semanticIndex}.ts` |
 | Shell | `extension.ts`, `statusBar.ts`, `util/{logger,cancellation}.ts` |
-| Test | `test/{runtime-smoke,provider-smoke,embedding-smoke,activity-smoke,trust-smoke}.js`, `test/ui-driver.js` |
+| Test | `test/{runtime-smoke,provider-smoke,embedding-smoke,routing-smoke,activity-smoke,trust-smoke}.js`, `test/ui-driver.js` |
 
 **Upstream files I modified — 29, plus 2 deleted and 1 added,** on top of removing the bundled Copilot
 extension. That count is not a claim you have to take on trust:
