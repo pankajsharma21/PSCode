@@ -23,7 +23,7 @@ Copilot extension is deleted, and `product.json`'s `disableCloudChat` flag makes
 `chatEntitlementService` set `ChatContextKeys.Setup.hidden`, which collapses the core chat view,
 the editor watermark hints, the help-menu entries and the onboarding walkthroughs in one move.
 
-| **Extension host** | Node.js, full `vscode` API, filesystem, sockets | all 17 modules in `src/` |
+| **Extension host** | Node.js, full `vscode` API, filesystem, sockets | all 26 modules in `src/` |
 | **Model server** | Separate OS process on a port picked at startup | llama.cpp's `llama-server`, shipped inside PSCode and owned by it |
 
 The webview and the extension host communicate **only** by `postMessage`. That boundary is the

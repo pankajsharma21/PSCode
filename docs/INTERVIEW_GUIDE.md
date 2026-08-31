@@ -84,8 +84,8 @@ Answer immediately and specifically. Never hedge.
 > and three files where "VS Code" appears in visible UI text. I also deleted the bundled Copilot
 > extension — 4,122 files, about 87% of the repo.
 >
-> Everything AI is mine, and I kept it in one directory — `extensions/pscode-ai/`, 3,695 lines
-> across 17 TypeScript modules — precisely so this question has a clean answer. Happy to walk any
+> Everything AI is mine, and I kept it in one directory — `extensions/pscode-ai/`, 6,046 lines
+> across 26 TypeScript modules — precisely so this question has a clean answer. Happy to walk any
 > file in it."
 
 Then offer `git log` or `git diff` against upstream. Being the one to offer proof reads as
@@ -290,7 +290,7 @@ Extension host (Node)
    ├── ChatViewProvider ── conversation state, brokers privilege
    ├── contextBuilder ──── budgeted: selection > @mentions > active file > diagnostics
    ├── agentLoop ───────── stream → tools → repeat, bounded
-   ├── tools ───────────── 7 tools, workspace-confined, approval-gated
+   ├── tools ───────────── 11 tools, workspace-confined, approval-gated
    └── providers/ ──────── LLMProvider: bundled | ollama | openai-compatible | anthropic
             │  HTTP
         localhost:11434
@@ -339,7 +339,7 @@ Volunteering a weakness reads as senior. Being caught hiding one reads as the op
 - [ ] Can state the 8 modified upstream files from memory
 - [ ] Can draw the architecture on paper without notes
 - [ ] `git log` presentable — no "wip" or "asdf" commits
-- [ ] Know your own numbers: 3,695 lines, 17 modules, 7 tools, 3 providers, 12 upstream files
+- [ ] Know your own numbers: 6,046 lines, 26 modules, 11 tools, 4 providers, 29 upstream files
 
 ---
 

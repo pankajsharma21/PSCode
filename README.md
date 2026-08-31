@@ -56,7 +56,7 @@ a model write to `../../.ssh/id_rsa`. Showing a diff the user can reject.
 
 > **On the fork:** PSCode is a fork of [microsoft/vscode](https://github.com/microsoft/vscode)
 > (MIT). The editor, terminal and extension host are Microsoft's work, not mine. Everything AI
-> in this repo — `extensions/pscode-ai/`, 3,695 lines across 17 TypeScript modules — is mine, and
+> in this repo — `extensions/pscode-ai/`, 6,046 lines across 26 TypeScript modules — is mine, and
 > it is deliberately confined to one directory so the boundary is obvious. See
 > [What I wrote](#what-i-wrote-vs-what-came-from-vs-code).
 
@@ -741,7 +741,7 @@ your own stored workbench state rather than what a new user sees.
 
 Being precise about this matters more than the line count.
 
-**Mine — `extensions/pscode-ai/`, 3,695 lines, 17 TypeScript modules:**
+**Mine — `extensions/pscode-ai/`, 6,046 lines, 26 TypeScript modules:**
 
 | Area | Files |
 |---|---|
@@ -752,9 +752,9 @@ Being precise about this matters more than the line count.
 | Inline edit | `inline/{inlineEdit,proposalDocuments}.ts` |
 | Context | `context/{contextBuilder,projectRules,semanticIndex}.ts` |
 | Shell | `extension.ts`, `statusBar.ts`, `util/{logger,cancellation}.ts` |
-| Test | `test/{provider-smoke,embedding-smoke,activity-smoke}.js`, `test/ui-driver.js` |
+| Test | `test/{runtime-smoke,provider-smoke,embedding-smoke,activity-smoke,trust-smoke}.js`, `test/ui-driver.js` |
 
-**Upstream files I modified — 27, plus 2 deleted,** on top of removing the bundled Copilot
+**Upstream files I modified — 29, plus 2 deleted and 1 added,** on top of removing the bundled Copilot
 extension. That count is not a claim you have to take on trust:
 
 ```bash
