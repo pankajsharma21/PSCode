@@ -7,26 +7,59 @@
  *  whether the dimensions are what the index assumed, and whether similarity actually
  *  separates related code from unrelated code.
  *
+ *  Prefers the engine PSCode ships, because that is what a user actually runs. It drives the
+ *  real `provider: 'bundled'` path - the runtime singleton and its lazily-resolved endpoint -
+ *  rather than a hand-built client, so the wiring under test is the wiring that ships.
+ *
  *  Usage:
- *    ollama serve &
- *    ollama pull nomic-embed-text
+ *    ./scripts/fetch-llm-runtime.sh
+ *    npm run compile
  *    node extensions/pscode-ai/test/embedding-smoke.js
  *
- *  Requires the extension to be compiled first (npm run compile at the repo root).
+ *  With no bundled runtime it falls back to Ollama, which is the only way to exercise
+ *  OllamaEmbeddings at all:
+ *    ollama serve & ; ollama pull nomic-embed-text
  *--------------------------------------------------------------------------------------------*/
 
+const { join } = require('path');
 const { createEmbeddingClient, cosineSimilarity } = require('../out/providers/embeddings');
 const { ProviderError } = require('../out/providers/types');
+const { discoverRuntime, BundledRuntime, setBundledRuntime } = require('../out/runtime/bundledRuntime');
 
-const MODEL = process.env.PSCODE_TEST_EMBED_MODEL || 'nomic-embed-text';
+const EXTENSION_ROOT = join(__dirname, '..');
 
-const settings = {
-	provider: 'ollama',
-	endpoint: 'http://127.0.0.1:11434',
-	embeddingModel: MODEL,
-	apiKey: '',
-	requestTimeoutMs: 120000,
-};
+/*
+ * `createEmbeddingClient({ provider: 'bundled' })` reads a module singleton, because in the real
+ * extension one window owns one runtime. Publishing it here is what lets the test take the
+ * production path instead of reaching past it to build a client by hand.
+ */
+function useBundledRuntime() {
+	const layout = discoverRuntime(EXTENSION_ROOT);
+	if (!layout?.embed) { return undefined; }
+
+	const runtime = new BundledRuntime(layout, {
+		contextSize: 2048,
+		threads: 0,
+		startupTimeoutMs: 300000,
+		log: message => console.log(`      [engine] ${message}`),
+	});
+	setBundledRuntime(runtime);
+	return runtime;
+}
+
+const runtime = useBundledRuntime();
+
+const MODEL = process.env.PSCODE_TEST_EMBED_MODEL
+	|| runtime?.embedModel
+	|| 'nomic-embed-text';
+
+const settings = runtime
+	? { provider: 'bundled', endpoint: '', embeddingModel: MODEL, apiKey: '', requestTimeoutMs: 120000 }
+	: { provider: 'ollama', endpoint: 'http://127.0.0.1:11434', embeddingModel: MODEL, apiKey: '', requestTimeoutMs: 120000 };
+
+console.log(runtime
+	? `Using the bundled engine — ${MODEL}`
+	: `No bundled runtime found; falling back to Ollama — ${MODEL}`);
 
 let failures = 0;
 function check(name, ok, detail) {
@@ -73,7 +106,7 @@ async function main() {
 		`margin=${(scores[0] - Math.max(scores[1], scores[2])).toFixed(3)}`
 	);
 
-	// 4. Ordering is positional for Ollama, so a mismatched count is the only guard available;
+	// 4. Ordering is positional for every provider here, so a mismatched count is the only guard;
 	//    confirm a single input still round-trips (the search path always sends exactly one).
 	const single = await client.embed(['just one'], AbortSignal.timeout(60000));
 	check('a single-input batch works', single.length === 1 && single[0].length === dims);
@@ -87,8 +120,12 @@ async function main() {
 	}
 
 	// 6. A dead port must explain itself; this is the first thing a new user hits.
+	//    Deliberately NOT the bundled provider: bundled ignores `endpoint` and resolves its own,
+	//    so this client would reach the live engine and the assertion would silently invert.
 	try {
-		const dead = createEmbeddingClient({ ...settings, endpoint: 'http://127.0.0.1:9', requestTimeoutMs: 4000 });
+		const dead = createEmbeddingClient({
+			...settings, provider: 'ollama', endpoint: 'http://127.0.0.1:9', requestTimeoutMs: 4000,
+		});
 		await dead.embed(['x'], AbortSignal.timeout(6000));
 		check('a dead endpoint errors', false, 'it resolved instead');
 	} catch (error) {
@@ -96,12 +133,23 @@ async function main() {
 	}
 }
 
+/*
+ * The engine holds gigabytes of weights, so it is disposed on both paths - a test that leaks a
+ * model process is worse than a test that fails.
+ */
+const shutdown = () => {
+	setBundledRuntime(undefined);
+	runtime?.dispose();
+};
+
 main().then(
 	() => {
+		shutdown();
 		console.log(failures === 0 ? '\nAll embedding checks passed.' : `\n${failures} check(s) FAILED.`);
 		process.exit(failures === 0 ? 0 : 1);
 	},
 	error => {
+		shutdown();
 		console.error('\nSmoke test threw:', error && error.message ? error.message : error);
 		if (error && error.hint) {
 			console.error('Hint:', error.hint);
