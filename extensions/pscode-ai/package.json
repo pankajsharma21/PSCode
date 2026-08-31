@@ -230,13 +230,13 @@
         },
         "pscode.ai.startupTimeoutMs": {
           "type": "number",
-          "default": 180000,
-          "description": "How long to wait for the bundled engine to load its weights before reporting a failure."
+          "default": 600000,
+          "description": "How long to wait for the bundled engine to load its weights before reporting a failure. Loading 9GB takes ~21s once the file is in the page cache; this is set for a first run reading it off disk."
         },
         "pscode.ai.requestTimeoutMs": {
           "type": "number",
-          "default": 300000,
-          "description": "Abort a request after this many milliseconds. CPU-only inference is slow, so this is deliberately generous."
+          "default": 1800000,
+          "description": "Abort a request after this many milliseconds of silence. It is an inactivity timeout, so what it really bounds is the wait for the first token - once tokens stream, the gaps are small. Measured on the bundled 14B: a plain question is ~61s to first token, an agent turn carrying all 11 tool definitions took 440s. A 5-minute default cut that off mid-prefill and surfaced as a timeout on a model that was working."
         },
         "pscode.ai.contextBudgetChars": {
           "type": "number",

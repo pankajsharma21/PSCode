@@ -36,7 +36,7 @@ engine when the window opens.
 ./scripts/code.sh <a small demo repo>
 ```
 
-Confirm the status bar shows `✨ qwen2.5-3b-instruct-q4_k_m` and is **not** red — it goes green a
+Confirm the status bar shows `✨ qwen2.5-14b-instruct-q4_k_m` and is **not** red — it goes green a
 few seconds after the window opens, once the weights are loaded. Open a file with a real bug in
 it.
 

@@ -38,7 +38,8 @@ always clear whether PSCode is working or waiting on you.
 
 ![An agent edit waiting for approval, shown as a diff with an Accept/Reject card](docs/images/agent-approval.png)
 
-All of it running against `qwen2.5:7b` on localhost, on a CPU, with no network access.
+All of it running against the bundled `qwen2.5-14b-instruct-q4_k_m`, on a CPU, with no network
+access and nothing to install first.
 
 ---
 
@@ -86,7 +87,7 @@ happening, and for how long.
 
 ```
 ••• Gathering context            0s
-••• Waiting for qwen2.5:7b       1m 14s · first token · CPU inference is slow to start — still working
+••• Waiting for qwen2.5-14b…      1m 14s · first token · CPU inference is slow to start — still working
 ••• Writing                      8s · ~63 tok · 7.9 tok/s
 ••• Reading src/checkout.ts      2s · read_file
 ••• Deciding what to do next     31s · step 3 of 12
@@ -362,14 +363,39 @@ Details that make it hold up:
   design exists to remove.
 - **The embedding engine starts lazily**, on the first `@codebase` use — nobody pays a few hundred
   megabytes of memory for a feature they never open.
-- **3B, not 7B.** Agent mode depends on well-formed tool calls, and that is the first thing that
-  degrades in smaller models; 3B holds up where 1.5B does not. A 7B is better at code but its
-  first token can take over a minute on a CPU, which reads as a broken editor.
+- **14B, and the licence picked it, not the benchmark.** PSCode redistributes these weights inside
+  its installer, so the licence is a shipping constraint. Qwen2.5 is not uniformly licensed — the
+  3B Instruct and every Coder size up to 7B are `qwen-research`, which does not grant that
+  redistribution; 1.5B / 7B / 14B / 32B Instruct are `apache-2.0`; the 72B is under its own terms.
+  Among the Apache-2.0 ones, RAM decides: Q4_K_M plus an 8k KV cache needs ~5.7 GB at 7B, ~10.5 GB
+  at 14B and ~22.4 GB at 32B, and 32B does not fit a 32 GB machine that is also running an editor.
+  So 14B. It is slow — the engine takes ~21s to load and a tool-heavy agent prompt is minutes to
+  first token — which is exactly what the activity strip exists to make legible.
+  **Instruct, never Coder:** Qwen2.5-Coder writes better code but does not reliably follow the
+  `<tool_call>` convention its own template asks for, and agent mode is worthless without that.
 - **The weights are not in git.** `scripts/fetch-llm-runtime.sh` pulls pinned versions and
   verifies them against the checksums HuggingFace publishes; packaging copies them in.
 
 Nothing above the provider interface knows any of this happened: the engine speaks the OpenAI API,
 so it arrived as one new `LLMProvider` and no change to chat, inline edit or the agent loop.
+
+### What is bundled, and under what licence
+Everything in `extensions/pscode-ai/runtime/` is redistributed, so a `NOTICE` file is written
+beside the weights by the fetch script — generated from the same variables that downloaded them,
+so it cannot describe a model other than the one actually present.
+
+| Component | Licence |
+|---|---|
+| llama.cpp `b10679` | MIT |
+| `Qwen2.5-14B-Instruct` Q4_K_M | Apache-2.0 |
+| `nomic-embed-text-v1.5` f16 | Apache-2.0 |
+
+If you point `CHAT_REPO` at a different model, check its licence first — Qwen2.5 mixes
+`apache-2.0` and `qwen-research` across sizes, and only the former can ship in an installer:
+
+```bash
+curl -s https://huggingface.co/api/models/<repo> | jq .cardData.license
+```
 
 ### Bring your own model
 | Provider | Use it for | Needs anything installed? |
@@ -588,7 +614,7 @@ All settings live under `pscode.` in Settings (<kbd>Ctrl</kbd>+<kbd>,</kbd>).
 | `pscode.ai.apiKey` | `""` | `PSCODE_API_KEY` env var wins over this |
 | `pscode.ai.temperature` | `0.2` | Low, because these are code edits |
 | `pscode.ai.maxTokens` | `4096` | Per response |
-| `pscode.ai.requestTimeoutMs` | `300000` | Generous: CPU inference is slow to first token |
+| `pscode.ai.requestTimeoutMs` | `1800000` | Inactivity timeout, so really the wait for the first token. See the measurements below |
 | `pscode.ai.contextBudgetChars` | `24000` | Lower it for small-context models |
 | `pscode.ai.projectRules` | `true` | Send `AGENTS.md` / `.cursorrules` with every request |
 | `pscode.ai.embeddingModel` | `nomic-embed-text` | For `@codebase`. Separate from the chat model; changing it invalidates the index |
@@ -696,9 +722,9 @@ node extensions/pscode-ai/test/runtime-smoke.js
 ```
 
 ```
-PASS  the runtime is present — qwen2.5-coder-3b-instruct-q4_k_m
+PASS  the runtime is present — qwen2.5-14b-instruct-q4_k_m
 PASS  no engine is running before the first call
-PASS  the engine starts on demand — http://127.0.0.1:44743 in 2.3s
+PASS  the engine starts on demand — http://127.0.0.1:33633 in 20.7s
 PASS  concurrent callers share one engine — 1 process(es)
 PASS  it answers a chat turn — "READY"
 PASS  tool calls come back structured — read_file({"path": "src/app.ts"})
@@ -873,8 +899,24 @@ the extension host and IPC are VS Code's. I did not write those and do not claim
 
 Stated plainly, because pretending otherwise wastes your time:
 
-- **CPU inference is slow.** On a 12-core CPU with no GPU, a 7B Q4 model produces roughly
-  8–20 tokens/sec. Chat and inline edit feel fine. Long agent runs require patience.
+- **CPU inference is slow, and at 14B it is *properly* slow.** Measured on a 12-thread
+  i5-1235U with no GPU, bundled `qwen2.5-14b-instruct-q4_k_m`, same question either way:
+
+  | | prompt | time to answer |
+  |---|---|---|
+  | a question (no tools) | 299 tokens | **61s** |
+  | a task (11 tool definitions) | 2,064 tokens | **440s** — and that is *one* step of up to 12 |
+
+  The engine itself loads in ~21s. So: chat is a minute, and a multi-step agent task can run for
+  the better part of an hour. That is the price of a 14B on a CPU, and it is why the activity strip
+  with its running clock exists — a working editor and a hung one must not look the same.
+
+  `requestTimeoutMs` defaults to 30 minutes for exactly this reason. The old 5-minute default was
+  shorter than the 440s above, so agent mode timed out on a model that was working fine.
+
+  **If you want it faster,** point `CHAT_REPO` in `scripts/fetch-llm-runtime.sh` at
+  `Qwen/Qwen2.5-7B-Instruct-GGUF` — also `apache-2.0`, roughly half the work per token, and it
+  arrives as two shards which the script already joins.
 - **No tab autocomplete.** Ghost-text completion needs sub-200 ms round trips, which CPU-only
   inference cannot deliver. Shipping a laggy version would be worse than not shipping it.
 - **Agent mode is only as good as the model.** 7B models lose track of multi-step plans, emit
