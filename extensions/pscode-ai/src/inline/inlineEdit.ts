@@ -38,6 +38,42 @@ function unfence(text: string): string {
 	return fenced ? fenced[1] : trimmed;
 }
 
+/**
+ * Puts back the leading whitespace the model dropped.
+ *
+ * The prompt asks it to preserve indentation, and it mostly does - but `unfence` trims, and a model
+ * asked to rewrite one indented line routinely answers with the line un-indented. Spliced back at
+ * the original offset that silently de-indents the code, which on a single-line edit is the whole
+ * visible result of pressing Ctrl+I.
+ *
+ * Only applied when the model produced no leading whitespace of its own and every line of the
+ * original shares an indent, so a multi-line block that already carries its own shape is left
+ * alone. Measured case: `\tfor (let i = 0; ...)` came back with the tab gone.
+ */
+function restoreIndent(original: string, replacement: string): string {
+	if (/^[ \t]/.test(replacement)) {
+		return replacement;
+	}
+
+	const lines = original.split('\n');
+	const indents = lines
+		.filter(line => line.trim())
+		.map(line => /^[ \t]*/.exec(line)?.[0] ?? '');
+	if (indents.length === 0) {
+		return replacement;
+	}
+
+	const indent = indents[0];
+	if (!indent || !indents.every(other => other.startsWith(indent))) {
+		return replacement;
+	}
+
+	// Every line gets it, so a one-line snippet replaced by several stays inside its block.
+	return replacement.split('\n')
+		.map(line => (line.trim() ? indent + line : line))
+		.join('\n');
+}
+
 export async function runInlineEdit(): Promise<void> {
 	const editor = vscode.window.activeTextEditor;
 	if (!editor) {
@@ -134,7 +170,10 @@ export async function runInlineEdit(): Promise<void> {
 							produced += event.text;
 							// Re-render the whole proposed document each tick so the diff
 							// updates live; the file is already in memory, so this is cheap.
-							setProposal(proposalUri, replaceRange(document, range, unfence(produced)));
+							setProposal(
+								proposalUri,
+								replaceRange(document, range, restoreIndent(original, unfence(produced)))
+							);
 							progress.report({ message: `${produced.length} characters` });
 						}
 					}
@@ -149,7 +188,7 @@ export async function runInlineEdit(): Promise<void> {
 		return;
 	}
 
-	const replacement = unfence(produced);
+	const replacement = restoreIndent(original, unfence(produced));
 	if (!replacement) {
 		clearProposal(proposalUri);
 		void vscode.window.showWarningMessage('PSCode AI returned an empty result. Nothing was changed.');

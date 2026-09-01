@@ -655,6 +655,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		}
 
 		const relative = vscode.workspace.asRelativePath(document.uri, false);
+
+		/*
+		 * Refuse the one case where Apply is destructive rather than useful.
+		 *
+		 * With no selection, a code block is treated as the file's new contents - which is what a
+		 * model that reprints a whole file actually means. But the chat prompt tells the model the
+		 * opposite: "show only the lines that change ... do not reprint an entire file". So the
+		 * common case is a fragment, and applying a fragment as a whole file deletes everything
+		 * around it.
+		 *
+		 * A diff and an approval card were already shown for this, and that was not enough: the
+		 * card read "200 lines to 5" and a card is a warning, not a brake. So this refuses, and
+		 * says the one thing that fixes it. Erring towards refusing is safe here - the cost is one
+		 * extra selection, and the cost of being wrong the other way is the user's file.
+		 */
+		if (!replacesSelection) {
+			const fileLines = original.split('\n').filter(line => line.trim()).length;
+			const blockLines = code.split('\n').filter(line => line.trim()).length;
+			if (fileLines > 10 && blockLines < fileLines / 2) {
+				void vscode.window.showWarningMessage(
+					`That block is ${blockLines} lines and ${relative} is ${fileLines} - applying it with `
+					+ 'nothing selected would replace the whole file and delete the rest. '
+					+ 'Select the code it should replace, then press Apply again.',
+					'Got it'
+				);
+				log.warn(
+					`[apply] refused: ${blockLines}-line block would have replaced all ${fileLines} `
+					+ `lines of ${relative} with no selection`
+				);
+				return;
+			}
+		}
 		await showProposedDiff(document.uri, proposed, true, 'apply');
 
 		const before = original.split('\n').length;
@@ -662,10 +694,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		const approved = await this.requestApproval({
 			id: nextApprovalId(),
 			kind: replacesSelection ? 'edit' : 'overwrite',
-			title: `${replacesSelection ? 'Replace selection in' : 'Rewrite'} ${relative}`,
+			title: `${replacesSelection ? 'Replace selection in' : 'Rewrite the whole of'} ${relative}`,
 			detail: replacesSelection
 				? `lines ${selection.start.line + 1}-${selection.end.line + 1}`
-				: `${before} lines to ${after}`,
+				// Says "replaces all N" rather than "N to M", because the number that matters is
+				// how much is being thrown away, not the arithmetic.
+				: `replaces all ${before} lines with ${after}`,
 			filePath: relative,
 			hasDiff: true,
 		}, this.applyApprovals);
