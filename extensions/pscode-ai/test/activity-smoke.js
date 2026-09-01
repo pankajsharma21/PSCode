@@ -229,13 +229,21 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 	await sleep(1200);
 	await panel.eval(RESET_RECORDER);
 	/*
-	 * Phrasing is what selects the tool path now, so the prompt has to open with an imperative
-	 * the router recognises - "read ..." does, and it is still a read-only task. If this ever
-	 * stops reaching a tool phase, check routing-smoke.js before suspecting the agent loop.
+	 * Two things this prompt has to do, and it used to only do the first.
+	 *
+	 * It must open with an imperative the router recognises, because phrasing is what selects the
+	 * tool path now - "list ..." does. And it must ask for something the model *cannot already
+	 * know*, which is the part that broke: "read a source file and tell me what it does" reached a
+	 * tool phase on a 3B, and stopped doing so on the 14B, which simply answered from the file the
+	 * context builder had already attached. A better model made the stimulus too weak.
+	 *
+	 * Counting entries in a directory is not answerable from context at any model size, so the
+	 * assertion tests the agent loop rather than the model's willingness to be literal-minded.
+	 * If this ever fails, check routing-smoke.js before suspecting the loop.
 	 */
 	await panel.eval(`
 	  const c = document.getElementById('composer');
-	  c.value = 'Read a source file in this workspace and tell me in one sentence what it does. Do not edit anything.';
+	  c.value = 'List the files in this workspace with your tools, then tell me how many there are. Do not edit anything.';
 	  document.getElementById('send').click();
 	  return true;
 	`);

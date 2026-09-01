@@ -62,15 +62,22 @@ function stripPoliteness(text: string): string {
  * place here only when it plainly cannot be satisfied from context - `read`, `find` and `search`
  * qualify, `check` and `look` are more often rhetorical and are left out on purpose.
  */
-const TASK_VERBS = new Set([
-	// change the workspace
+const CHANGE_VERBS = new Set([
 	'fix', 'add', 'remove', 'delete', 'rename', 'refactor', 'implement', 'create', 'write',
 	'update', 'change', 'edit', 'move', 'extract', 'replace', 'rewrite', 'convert', 'migrate',
 	'split', 'merge', 'generate', 'make', 'build', 'run', 'install', 'commit', 'apply', 'wire',
 	'hook', 'rerun', 'revert', 'undo', 'bump', 'clean', 'format', 'lint', 'test', 'port', 'patch',
-	// go and look at the workspace - answerable only with tools
-	'read', 'open', 'find', 'search', 'list', 'grep', 'inspect',
 ]);
+
+/** Do not change anything, but cannot be answered without going and looking. */
+const LOOK_VERBS = new Set(['read', 'open', 'find', 'search', 'list', 'grep', 'inspect']);
+
+const TASK_VERBS = new Set([...CHANGE_VERBS, ...LOOK_VERBS]);
+
+/** The two groups need tools for different reasons, and the log should say which. */
+const whyItNeedsTools = (verb: string): string => CHANGE_VERBS.has(verb)
+	? `it opens with "${verb}", which asks for a change`
+	: `it opens with "${verb}", which means going and looking at your files`;
 
 /*
  * Words that open a question. `explain`, `describe` and `summarize` are here rather than in
@@ -116,7 +123,7 @@ export function routeMessage(text: string): RoutingDecision {
 	const first = firstWord(stripped);
 
 	if (TASK_VERBS.has(first)) {
-		return { route: 'work', reason: `it opens with "${first}", which asks for a change` };
+		return { route: 'work', reason: whyItNeedsTools(first) };
 	}
 
 	if (HINGLISH_IMPERATIVE.test(stripped)) {
