@@ -59,3 +59,6 @@ dist
 # copied into the installer at package time. Far too large for git, and reproducible from the
 # pinned versions in that script.
 extensions/pscode-ai/runtime/
+
+# Personal interview notes - kept locally, deliberately not in a public repo.
+docs/INTERVIEW_GUIDE.md
