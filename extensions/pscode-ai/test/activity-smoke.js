@@ -130,7 +130,10 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 	 */
 	const seen = [];
 	let everBusy = false;
-	for (let i = 0; i < 150; i++) {
+	// 1.2s a tick. The cap is a runaway guard, not a deadline - the loop exits as soon as the turn
+	// ends, so it costs nothing when the model is quick. Sized for the bundled 14B, where a plain
+	// question measured 61s.
+	for (let i = 0; i < 500; i++) {
 		await sleep(1200);
 		strip = JSON.parse(await panel.eval(readStrip));
 		if (!strip.hidden && strip.phase && !seen.some(s => s.phase === strip.phase)) {
@@ -243,7 +246,11 @@ const RESET_RECORDER = `document.body.dataset.phaseLog = '[]'; return true;`;
 	// read a prompt carrying all 11 tool definitions.
 	const agentPhases = [];
 	let agentEverBusy = false;
-	for (let i = 0; i < 180; i++) {
+	// Much larger than the chat loop for one measured reason: an agent turn carries all 11 tool
+	// definitions (~2,000 prompt tokens) and took 440s on the 14B. At 216s the old cap expired
+	// mid-prefill and the run failed on a tool phase that had not happened yet - the same class of
+	// mistake as the 5-minute request timeout.
+	for (let i = 0; i < 900; i++) {
 		await sleep(1200);
 		strip = JSON.parse(await panel.eval(readStrip));
 		if (!strip.hidden && strip.phase && !agentPhases.some(s => s.phase === strip.phase && s.label === strip.label)) {

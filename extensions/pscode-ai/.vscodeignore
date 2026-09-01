@@ -9,3 +9,7 @@ tsconfig.json
 # scripts/ is deliberately NOT ignored: the fetch script has to travel with the extension, or a
 # packaged install has no way to get the model.
 runtime/**
+
+# Build artefact and the smoke-test harness - neither belongs in a shipped editor.
+tsconfig.tsbuildinfo
+test/**
