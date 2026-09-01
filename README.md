@@ -431,16 +431,16 @@ service was stopped, upgraded, or holding a different model than the settings ex
 
 ### 1. Download the installer
 
-Attached to the [latest release][releases]. **The repository is private, so a plain `wget` of an
-asset URL will not work** — use the authenticated GitHub CLI:
+Attached to the [latest release][releases]:
 
 ```bash
-gh release download --repo pankajsharma21/PSCode --pattern 'pscode_*_amd64.deb'   # or
-gh release download --repo pankajsharma21/PSCode --pattern 'PSCode-linux-x64-*.tar.gz'
+gh release download --repo pankajsharma21/PSCode \
+  --pattern 'pscode_*_amd64.deb' --pattern 'SHA256SUMS'    # or PSCode-linux-x64-*.tar.gz
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
-Without a tag `gh` takes the latest release, which is what you want.
+Without a tag `gh` takes the latest release, which is what you want. No `gh`? The assets are on the
+[releases page][releases] and a plain `wget` works.
 
 **The installer is ~230 MB and does not contain the model.** PSCode fetches the engine and weights
 from their publishers the first time you open the AI panel — one download, about 9 GB, and it goes
