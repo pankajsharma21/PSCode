@@ -57,7 +57,7 @@ a model write to `../../.ssh/id_rsa`. Showing a diff the user can reject.
 
 > **On the fork:** PSCode is a fork of [microsoft/vscode](https://github.com/microsoft/vscode)
 > (MIT). The editor, terminal and extension host are Microsoft's work, not mine. Everything AI
-> in this repo — `extensions/pscode-ai/`, 6,216 lines across 27 TypeScript modules — is mine, and
+> in this repo — `extensions/pscode-ai/`, 6,525 lines across 28 TypeScript modules — is mine, and
 > it is deliberately confined to one directory so the boundary is obvious. See
 > [What I wrote](#what-i-wrote-vs-what-came-from-vs-code).
 
@@ -853,6 +853,51 @@ and the webview iframe, and never touches the service worker. It also has to mak
 in a nested frame, because the `vscode-webview://` target is only a host frame whose own document
 is empty.
 
+The driver reaches the workbench too, not just the panel, because the two features that write to
+your file — <kbd>Ctrl</kbd>+<kbd>I</kbd> and the Accept gate in front of it — live there:
+
+```bash
+node extensions/pscode-ai/test/inline-edit-smoke.js 9333 <the same folder>
+```
+
+```
+PASS  a diff opens before anything is written
+PASS  the file is untouched while the proposal waits
+PASS  an Accept control is present and clickable — PSCode: Accept AI Change
+PASS  Accept fixed the off-by-one in the editor — for (let i = 0; i < items.length; i++) {
+PASS  every other function is still there - a range was replaced, not the file
+PASS  the file is still unsaved, so one Ctrl+Z undoes the whole thing
+PASS  the indentation survived — "\tfor (let i "
+PASS  Discard left the file exactly as it was
+```
+
+Four things had to be got right before that test could be trusted, and each one first looked like
+a product bug:
+
+- **Monaco renders every space as U+00A0.** A line reading `for (let i = 0; i <= n; i++)` contains
+  no ASCII spaces at all, so matching it against a normally-typed needle silently finds nothing.
+- **A diff is not a completion signal.** `runInlineEdit` opens the diff *before* it streams, seeded
+  with the unmodified file, so it is true within a second of the keypress.
+- **`el.click()` is ignored by editor-title actions.** It returns the label it found, so it looks
+  like it worked and applies nothing.
+- **Reading the file after Accept shows no change, by design.** The edit lands in the buffer and is
+  deliberately left unsaved — that is what keeps it one <kbd>Ctrl</kbd>+<kbd>Z</kbd> away.
+
+The two guards that stand between a model's output and your file are decisions about text, so they
+are tested without a model at all — in under a second:
+
+```bash
+node extensions/pscode-ai/test/apply-guard-smoke.js
+```
+
+```
+PASS  a 3-line block over a 40-line file, nothing selected — refused
+PASS  the same block WITH a selection is fine — allowed
+PASS  a 38-line block over a 40-line file — allowed
+PASS  a tab-indented line rewritten without the tab — "\tfor (let i = 0; i < n; i++) {"
+PASS  a mixed-indent block is left alone - it carries its own shape
+```
+
 Two more things worth knowing: short phases cannot be caught by polling — on a three-file workspace
 the context build finishes inside any sane sampling interval — so the test records every activity
 message instead; and test first-run behaviour with a throwaway `--user-data-dir`, or you are testing
@@ -864,20 +909,20 @@ your own stored workbench state rather than what a new user sees.
 
 Being precise about this matters more than the line count.
 
-**Mine — `extensions/pscode-ai/`, 6,216 lines, 27 TypeScript modules:**
+**Mine — `extensions/pscode-ai/`, 6,525 lines, 28 TypeScript modules:**
 
 | Area | Files |
 |---|---|
 | Provider layer | `providers/{types,http,bundled,ollama,openaiCompat,anthropic,embeddings,registry}.ts` |
-| Bundled engine | `runtime/{modelServer,bundledRuntime}.ts`, `scripts/fetch-llm-runtime.sh` |
+| Engine and weights | `runtime/{modelServer,bundledRuntime,download}.ts`, `scripts/fetch-llm-runtime.sh` |
 | Agent | `agent/{agentLoop,tools,prompts,approvals,checkpoints}.ts` |
 | Chat | `chat/{chatViewProvider,history,routing}.ts`, `media/chat.{js,css}` |
 | Inline edit | `inline/{inlineEdit,proposalDocuments}.ts` |
 | Context | `context/{contextBuilder,projectRules,semanticIndex}.ts` |
 | Shell | `extension.ts`, `statusBar.ts`, `util/{logger,cancellation}.ts` |
-| Test | `test/{runtime-smoke,provider-smoke,embedding-smoke,routing-smoke,activity-smoke,trust-smoke}.js`, `test/ui-driver.js` |
+| Test | `test/{runtime,provider,embedding,routing,apply-guard,activity,trust,inline-edit}-smoke.js`, `test/ui-driver.js` |
 
-**Upstream files I modified — 29, plus 2 deleted and 1 added,** on top of removing the bundled Copilot
+**Upstream files I modified — 30, plus 2 deleted and 2 added,** on top of removing the bundled Copilot
 extension. That count is not a claim you have to take on trust:
 
 ```bash

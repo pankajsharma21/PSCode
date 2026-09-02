@@ -23,7 +23,7 @@ Copilot extension is deleted, and `product.json`'s `disableCloudChat` flag makes
 `chatEntitlementService` set `ChatContextKeys.Setup.hidden`, which collapses the core chat view,
 the editor watermark hints, the help-menu entries and the onboarding walkthroughs in one move.
 
-| **Extension host** | Node.js, full `vscode` API, filesystem, sockets | all 27 modules in `src/` |
+| **Extension host** | Node.js, full `vscode` API, filesystem, sockets | all 28 modules in `src/` |
 | **Model server** | Separate OS process on a port picked at startup | llama.cpp's `llama-server`, shipped inside PSCode and owned by it |
 
 The webview and the extension host communicate **only** by `postMessage`. That boundary is the
@@ -191,7 +191,7 @@ regularly. The loop replies *"your arguments were not valid JSON, send them agai
 model recover — a thrown exception would end the run instead.
 
 **A missing tool name lists the real ones.** When a model hallucinates `edit_file`, the result
-enumerates the seven tools that exist, which recovers the turn instead of wasting it.
+enumerates the eleven tools that exist, which recovers the turn instead of wasting it.
 
 **Repetition is blocked in code, not just in the prompt.** Small models loop: they re-issue an
 identical tool call, or keep "improving" a file they already edited. Observed directly — one task
