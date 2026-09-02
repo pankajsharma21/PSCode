@@ -163,6 +163,203 @@ async function attachPanel(port) {
 	return undefined;
 }
 
+/*
+ * Everything below drives the *workbench* rather than the panel webview: opening a file, moving
+ * the cursor, selecting a range, reading toasts, clicking editor-title actions. It exists because
+ * the parts of PSCode that touch the user's file - Ctrl+I and the Accept/Discard gate - live there,
+ * and were the only features with no automated coverage.
+ *
+ * One rule throughout: never hand-write a string literal into an evaluated expression. Every needle
+ * goes through `JSON.stringify`, because a quote or a bracket that survives Node but not the shell
+ * produces a filter that silently matches nothing - which reads as "the feature is broken" and cost
+ * three wrong diagnoses before it was noticed.
+ */
+
+/**
+ * Every rendered editor line, in order, with whitespace normalised.
+ *
+ * The normalisation is the whole point. Monaco renders **every** space as U+00A0, so a line that
+ * looks like `for (let i = 0; i <= n; i++)` contains no ASCII spaces at all - matching it against a
+ * needle typed normally silently finds nothing. That produced three separate wrong diagnoses here
+ * (a blamed `innerText`, then blamed shell quoting, then a blamed selector) before anyone printed
+ * the character codes. If a match ever fails again, print them first.
+ */
+async function editorLines(workbench) {
+	const json = await workbench.eval(`
+		return JSON.stringify(Array.from(document.querySelectorAll('.view-line'))
+			.map(line => (line.textContent || '').replace(/\u00a0/g, ' ')));
+	`);
+	return JSON.parse(json);
+}
+
+/**
+ * Opens a file by name through quick-open.
+ *
+ * Deliberately not by clicking the explorer: the tree virtualises and scrolls, so a click target
+ * depends on window height. Quick-open depends on the filename only.
+ */
+async function openFile(workbench, name, { timeoutSeconds = 20 } = {}) {
+	await workbench.key('P', { code: 'KeyP', modifiers: 2 }); // Ctrl+P
+	await sleep(800);
+	await workbench.type(name);
+	await sleep(1200);
+	await workbench.key('Enter');
+
+	for (let i = 0; i < timeoutSeconds; i++) {
+		await sleep(1000);
+		const open = await workbench.eval(`
+			const tabs = Array.from(document.querySelectorAll('.tab'))
+				.map(tab => (tab.getAttribute('aria-label') || tab.textContent || ''));
+			return tabs.some(label => label.includes(${JSON.stringify(name)}));
+		`);
+		if (open) { return true; }
+	}
+	return false;
+}
+
+/**
+ * Puts the caret on the first line containing `needle`, and returns its 1-based line number.
+ *
+ * Uses Go to Line rather than a click. A click needs the line's bounding box, which is wrong the
+ * moment the editor scrolls or the side bar resizes; a line number is a line number.
+ */
+async function placeCursor(workbench, needle) {
+	const lines = await editorLines(workbench);
+	const index = lines.findIndex(line => line.includes(needle));
+	if (index === -1) {
+		throw new Error(`no editor line contains ${JSON.stringify(needle)} (saw ${lines.length} lines)`);
+	}
+	const lineNumber = index + 1;
+
+	await workbench.key('g', { code: 'KeyG', modifiers: 2 }); // Ctrl+G
+	await sleep(700);
+	await workbench.type(String(lineNumber));
+	await sleep(600);
+	await workbench.key('Enter');
+	await sleep(600);
+	return lineNumber;
+}
+
+/** Places the caret, then extends the selection down `count - 1` lines. */
+async function selectLines(workbench, needle, count = 1) {
+	const lineNumber = await placeCursor(workbench, needle);
+	// Home first, so the selection starts at column 1 rather than wherever Go to Line landed.
+	await workbench.key('Home');
+	for (let i = 0; i < count; i++) {
+		await workbench.key('ArrowDown', { modifiers: 8 }); // Shift+Down
+	}
+	await sleep(500);
+	const selected = await workbench.eval(`
+		return document.querySelectorAll('.monaco-editor .selected-text').length > 0;
+	`);
+	if (!selected) {
+		throw new Error(`selection did not take on line ${lineNumber}`);
+	}
+	return lineNumber;
+}
+
+/** Notification toasts, newest first, whitespace collapsed. */
+async function toasts(workbench) {
+	const json = await workbench.eval(`
+		return JSON.stringify(Array.from(document.querySelectorAll('.notification-toast'))
+			.map(t => (t.textContent || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim()));
+	`);
+	return JSON.parse(json);
+}
+
+/** True once a side-by-side diff editor is on screen. */
+function diffIsOpen(workbench) {
+	return workbench.eval(`return !!document.querySelector('.monaco-diff-editor');`);
+}
+
+/**
+ * Clicks the first workbench control whose visible label or tooltip matches.
+ *
+ * Dispatches a real mouse event at the element's centre rather than calling `el.click()`.
+ * `el.click()` looked like it worked - it returned the label it had found - but nothing happened,
+ * because a VS Code editor-title action responds to pointer/mousedown and ignores a synthetic
+ * click. The symptom was an Accept that reported success and applied nothing, which is exactly the
+ * shape of bug this test exists to catch, so it must not come from the driver.
+ *
+ * Covers editor-title actions and notification buttons in one helper, because Accept and Discard
+ * appear in both places.
+ */
+async function clickControl(workbench, pattern) {
+	const found = await workbench.eval(`
+		const re = new RegExp(${JSON.stringify(pattern)}, 'i');
+		const controls = Array.from(document.querySelectorAll(
+			'a.action-label, .monaco-button, .monaco-text-button, .notification-toast a, li.action-item a'
+		));
+		const hit = controls.find(el => {
+			const label = ((el.textContent || '') + ' ' + (el.title || '') + ' '
+				+ (el.getAttribute('aria-label') || '')).replace(/\u00a0/g, ' ');
+			if (!re.test(label)) { return false; }
+			const box = el.getBoundingClientRect();
+			return box.width > 0 && box.height > 0;   // an offscreen action cannot be clicked
+		});
+		if (!hit) { return null; }
+		const box = hit.getBoundingClientRect();
+		return JSON.stringify({
+			label: (hit.textContent || hit.title || hit.getAttribute('aria-label') || 'control').trim(),
+			x: Math.round(box.left + box.width / 2),
+			y: Math.round(box.top + box.height / 2),
+		});
+	`);
+	if (!found) { return undefined; }
+
+	const { label, x, y } = JSON.parse(found);
+	const base = { x, y, button: 'left', clickCount: 1, buttons: 1 };
+	await workbench.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...base, buttons: 0 });
+	await workbench.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
+	await workbench.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, buttons: 0 });
+	return label;
+}
+
+/**
+ * Waits until a control matching `pattern` exists, and returns its label.
+ *
+ * This is the completion signal for an inline edit, and the diff editor is NOT: `runInlineEdit`
+ * opens the diff *before* it streams, seeded with the unmodified file, so "a diff is open" is true
+ * within a second of pressing Ctrl+I and says nothing about whether the model has finished. Waiting
+ * on the diff instead of on Accept is what made an earlier version of this test look for a button
+ * while the model was still producing its 39th character.
+ */
+async function waitForControl(workbench, pattern, { seconds = 300 } = {}) {
+	for (let i = 0; i < seconds; i++) {
+		const found = await workbench.eval(`
+			const re = new RegExp(${JSON.stringify(pattern)}, 'i');
+			const controls = Array.from(document.querySelectorAll(
+				'a.action-label, .monaco-button, .monaco-text-button, .notification-toast a, li.action-item a'
+			));
+			const hit = controls.find(el => re.test(
+				((el.textContent || '') + ' ' + (el.title || '') + ' ' + (el.getAttribute('aria-label') || ''))
+					.replace(/\u00a0/g, ' ')
+			));
+			return hit ? ((hit.textContent || hit.title || hit.getAttribute('aria-label') || 'control').trim()) : null;
+		`);
+		if (found) { return found; }
+		await sleep(1000);
+	}
+	return undefined;
+}
+
+/** True while a progress notification is on screen - i.e. the model is still working. */
+async function isWorking(workbench) {
+	return workbench.eval(`
+		return Array.from(document.querySelectorAll('.notification-toast'))
+			.some(t => /rewriting your selection/i.test((t.textContent || '').replace(/\u00a0/g, ' ')));
+	`);
+}
+
+/** Polls an expression in `session` until it is truthy. Returns false on timeout rather than throwing. */
+async function waitFor(session, expression, { seconds = 60, intervalMs = 1000 } = {}) {
+	for (let i = 0; i < seconds; i++) {
+		if (await session.eval(expression)) { return true; }
+		await sleep(intervalMs);
+	}
+	return false;
+}
+
 /** Runs a command through the palette. Keyboard-driven, exactly as a user would. */
 async function runCommand(workbench, command) {
 	await workbench.key('P', { code: 'KeyP', modifiers: 2 | 8 }); // Ctrl+Shift+P
@@ -186,4 +383,9 @@ async function openPanel(port, workbench, seconds = 40) {
 	return undefined;
 }
 
-module.exports = { listTargets, Session, attachWorkbench, attachPanel, runCommand, openPanel, sleep };
+module.exports = {
+	listTargets, Session, attachWorkbench, attachPanel, runCommand, openPanel, sleep,
+	// workbench driving
+	editorLines, openFile, placeCursor, selectLines, toasts, diffIsOpen, clickControl, waitFor,
+	waitForControl, isWorking,
+};
