@@ -233,13 +233,27 @@ function replaceRange(document: vscode.TextDocument, range: vscode.Range, replac
 }
 
 export async function acceptPendingEdit(): Promise<void> {
+	/*
+	 * Logged, because this function has three silent exits and no way to tell them apart from
+	 * outside. An Accept that quietly does nothing is indistinguishable from a click that never
+	 * landed, and that ambiguity cost a whole debugging session: a UI test could see the gate,
+	 * click it, and not know whether the click missed or the guard fired.
+	 */
 	if (!pending) {
+		log.warn('[inline] Accept pressed with no pending proposal - nothing to apply.');
 		return;
 	}
 	const { documentUri, proposalUri, range, replacement, version } = pending;
 
 	const document = await vscode.workspace.openTextDocument(documentUri);
+	log.info(
+		`[inline] Accept: ${vscode.workspace.asRelativePath(documentUri, false)} `
+		+ `lines ${range.start.line + 1}-${range.end.line + 1}, `
+		+ `${replacement.split('\n').length} replacement line(s), `
+		+ `version ${document.version} (expected ${version})`
+	);
 	if (document.version !== version) {
+		log.warn(`[inline] refused: the document moved from version ${version} to ${document.version}`);
 		void vscode.window.showWarningMessage(
 			'The file changed while PSCode AI was working, so the proposal was not applied. Run Ctrl+I again.'
 		);
@@ -256,11 +270,13 @@ export async function acceptPendingEdit(): Promise<void> {
 	await setDiffActive(false);
 
 	if (applied) {
+		log.info('[inline] applied');
 		await closeDiffEditor(proposalUri);
 		const shown = await vscode.window.showTextDocument(document, { preview: false });
 		// Leave the cursor on the edited text so the user sees what changed.
 		shown.selection = new vscode.Selection(range.start, range.start);
 	} else {
+		log.error('[inline] applyEdit returned false - the workspace edit was rejected');
 		void vscode.window.showErrorMessage('PSCode AI could not apply the change.');
 	}
 }
