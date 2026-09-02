@@ -990,16 +990,27 @@ Stated plainly, because pretending otherwise wastes your time:
   | a question (no tools) | 299 tokens | **61s** |
   | a task (11 tool definitions) | 2,064 tokens | **440s** — and that is *one* step of up to 12 |
 
-  The engine itself loads in ~21s. So: chat is a minute, and a multi-step agent task can run for
-  the better part of an hour. That is the price of a 14B on a CPU, and it is why the activity strip
-  with its running clock exists — a working editor and a hung one must not look the same.
+  The engine itself loads in ~21s. That 440s is a **floor**, measured with a minimal prompt: a real
+  task — *"make a Java class that calls a weather API"* — spent **over 14 minutes on its first step
+  alone** once `AGENTS.md` rules and workspace context were added on top of the tool definitions.
+  At three or four steps that is most of an hour.
 
-  `requestTimeoutMs` defaults to 30 minutes for exactly this reason. The old 5-minute default was
-  shorter than the 440s above, so agent mode timed out on a model that was working fine.
+  So, plainly: **asking questions works, and agent mode is impractical on this hardware.** Chat is
+  a minute. A task is not something you wait for. It is why the activity strip with its running
+  clock exists — a working editor and a hung one must not look the same — and why
+  `requestTimeoutMs` defaults to 30 minutes: the old 5-minute default was shorter than the 440s
+  above, so agent mode timed out on a model that was working fine.
 
-  **If you want it faster,** point `CHAT_REPO` in `scripts/fetch-llm-runtime.sh` at
-  `Qwen/Qwen2.5-7B-Instruct-GGUF` — also `apache-2.0`, roughly half the work per token, and it
-  arrives as two shards which the script already joins.
+  **The workaround is better than it sounds.** Pure code generation does not need tools at all —
+  there is no file to read. Phrase it as a question (*"what would a Java class that calls a weather
+  API look like?"*), get it in ~60s, and press **Apply** on the block. Tools earn their cost when
+  the model has to find something in your code, not when it is writing something new.
+
+  **If you want the tool path to be usable,** point `CHAT_REPO` in
+  `extensions/pscode-ai/scripts/fetch-llm-runtime.sh` at `Qwen/Qwen2.5-7B-Instruct-GGUF` — also
+  `apache-2.0`, roughly half the work per token, and it arrives as two shards the script already
+  joins. 14B is the default because it is the largest Apache-2.0 Qwen that fits in RAM here, not
+  because it is the fastest.
 - **No tab autocomplete.** Ghost-text completion needs sub-200 ms round trips, which CPU-only
   inference cannot deliver. Shipping a laggy version would be worse than not shipping it.
 - **Agent mode is only as good as the model.** 7B models lose track of multi-step plans, emit
