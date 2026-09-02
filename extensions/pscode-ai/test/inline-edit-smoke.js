@@ -13,15 +13,12 @@
  *  Runs against a real model, so it is slow: on the bundled 14B a one-line edit is ~30-60s and the
  *  whole run is a few minutes.
  *
- *  KNOWN FAILING, UNRESOLVED: "Accept changed the file". Everything up to it passes - the gate
- *  appears, it is labelled `PSCode: Accept AI Change`, and the file is untouched while it waits -
- *  but clicking it from here does not apply the edit, while clicking Discard from here does work.
- *  So it is one of two things and they have not been told apart yet:
- *    - the driver is clicking the editor-title action in a way VS Code ignores, or
- *    - `acceptPendingEdit()` is bailing (its only silent exit is the `document.version` guard).
- *  The extension log says nothing either way, because inline edits are not logged the way chat
- *  approvals are. Pressing Accept by hand once would settle it in seconds; until then this test is
- *  reporting a real open question rather than a known-good baseline.
+ *  Two false alarms are worth recording, because both looked like product bugs:
+ *    - clicking the editor-title action does not dispatch its command from CDP, so Accept appeared
+ *      to do nothing. Logging every path of acceptPendingEdit proved it was never entered. The
+ *      notification's button works, and the driver prefers it now.
+ *    - reading the file from disk after Accept shows no change, because the edit is applied to the
+ *      buffer and deliberately left unsaved. That is the undo story, not a failure.
  *
  *  Usage - the folder must contain the fixture this writes:
  *    ./scripts/code.sh --remote-debugging-port=9333 \
@@ -129,17 +126,36 @@ async function askForEdit(wb, needle, instruction, { gate = 'accept|discard' } =
 	check(!!acceptLabel, 'an Accept control is present and clickable', acceptLabel || '(none found)');
 	await D.sleep(3500);
 
+	/*
+	 * Read the BUFFER, not the disk.
+	 *
+	 * acceptPendingEdit applies a WorkspaceEdit and deliberately does not save - that is what keeps
+	 * the change on the undo stack, one Ctrl+Z from where the user was. An earlier version of this
+	 * test read the file and concluded Accept had done nothing, which was wrong twice over: it
+	 * missed the edit, and it hid the fact that staying unsaved is a feature. Both are asserted now.
+	 */
+	const buffer = (await D.editorLines(wb)).join('\n');
+	check(/i < items\.length/.test(buffer), 'Accept fixed the off-by-one in the editor',
+		(buffer.match(/^.*for \(let i.*$/m) || [''])[0].trim());
+	check(/for \(let i/.test(buffer) && !/i <= items\.length/.test(buffer),
+		'and the old line is gone');
+	check(/itemCount/.test(buffer) && /formatTotal/.test(buffer),
+		'every other function is still there - a range was replaced, not the file');
+
+	const onDiskAfterAccept = readFileSync(FILE, 'utf8');
+	check(onDiskAfterAccept === original,
+		'the file is still unsaved, so one Ctrl+Z undoes the whole thing');
+
+	// Save, and only then should disk agree.
+	await wb.key('s', { code: 'KeyS', modifiers: 2 });
+	await D.sleep(2500);
 	const accepted = readFileSync(FILE, 'utf8');
-	check(accepted !== original, 'Accept changed the file');
+	check(accepted !== original, 'after Ctrl+S the change reaches the file');
 	check(accepted.split('\n').length === originalLines,
-		'the line count is unchanged - a range was replaced, not the file',
+		'the saved file has the same line count',
 		`${originalLines} -> ${accepted.split('\n').length}`);
-	check(/i < items\.length/.test(accepted), 'the off-by-one is fixed',
-		(accepted.match(/^.*for \(let i.*$/m) || [''])[0].trim());
 	check(/^\t+for \(let i/m.test(accepted), 'the indentation survived',
 		JSON.stringify((accepted.match(/^.*for \(let i.*$/m) || [''])[0].slice(0, 12)));
-	check(/itemCount/.test(accepted) && /formatTotal/.test(accepted),
-		'every other function is still in the file');
 
 	/* --------------------------------------------------------- 2. Discard changes nothing ---- */
 	log('\n--- Ctrl+I, then Discard ---');

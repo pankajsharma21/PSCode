@@ -176,6 +176,28 @@ async function attachPanel(port) {
  */
 
 /**
+ * Gives the window a real click so it will accept keystrokes.
+ *
+ * Aimed at the editor area's centre when there is one, and at the workbench otherwise, so it never
+ * lands on a control that does something.
+ */
+async function ensureFocus(workbench) {
+	const point = await workbench.eval(`
+		const target = document.querySelector('.editor-container, .monaco-workbench');
+		if (!target) { return null; }
+		const box = target.getBoundingClientRect();
+		return JSON.stringify({ x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) });
+	`);
+	if (!point) { return; }
+	const { x, y } = JSON.parse(point);
+	const base = { x, y, button: 'left', clickCount: 1, buttons: 1 };
+	await workbench.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...base, buttons: 0 });
+	await workbench.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
+	await workbench.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, buttons: 0 });
+	await sleep(400);
+}
+
+/**
  * Every rendered editor line, in order, with whitespace normalised.
  *
  * The normalisation is the whole point. Monaco renders **every** space as U+00A0, so a line that
@@ -199,23 +221,48 @@ async function editorLines(workbench) {
  * depends on window height. Quick-open depends on the filename only.
  */
 async function openFile(workbench, name, { timeoutSeconds = 20 } = {}) {
-	await workbench.key('P', { code: 'KeyP', modifiers: 2 }); // Ctrl+P
-	await sleep(800);
-	await workbench.type(name);
-	await sleep(1200);
-	await workbench.key('Enter');
+	/*
+	 * Click the window first. A freshly launched workbench has not been interacted with, and the
+	 * very first synthesised keystroke goes nowhere - so Ctrl+P was silently lost and the file
+	 * never opened, which then surfaced as "saw 0 lines" from whatever looked at the editor next.
+	 * Earlier runs only worked because something else (opening the AI panel) had clicked first.
+	 */
+	/*
+	 * Retried as a whole, because the failure is silent and intermittent: quick-open either did not
+	 * receive the keystroke or was dismissed, and the only symptom is an editor with no rendered
+	 * lines - which the next call reports as "saw 0 lines", i.e. as if the file did not exist.
+	 * Re-driving the sequence is cheap; diagnosing it from one attempt is not.
+	 */
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		await ensureFocus(workbench);
+		await workbench.key('P', { code: 'KeyP', modifiers: 2 }); // Ctrl+P
+		await sleep(900);
 
-	for (let i = 0; i < timeoutSeconds; i++) {
-		await sleep(1000);
-		const open = await workbench.eval(`
+		const pickerOpen = await workbench.eval(`
+			const box = document.querySelector('.quick-input-widget');
+			return !!(box && box.style.display !== 'none' && box.querySelector('input'));
+		`);
+		if (!pickerOpen) {
+			await sleep(1000);
+			continue;
+		}
+
+		await workbench.type(name);
+		await sleep(1300);
+		await workbench.key('Enter');
+
+		if (await waitFor(workbench, `
 			const tabs = Array.from(document.querySelectorAll('.tab'))
 				.map(tab => (tab.getAttribute('aria-label') || tab.textContent || ''));
-			return tabs.some(label => label.includes(${JSON.stringify(name)}));
-		`);
-		if (open) { return true; }
+			return tabs.some(label => label.includes(${JSON.stringify(name)}))
+				&& document.querySelectorAll('.view-line').length > 0;
+		`, { seconds: Math.max(4, Math.ceil(timeoutSeconds / 3)) })) {
+			return true;
+		}
 	}
 	return false;
 }
+
 
 /**
  * Puts the caret on the first line containing `needle`, and returns its 1-based line number.
@@ -223,9 +270,17 @@ async function openFile(workbench, name, { timeoutSeconds = 20 } = {}) {
  * Uses Go to Line rather than a click. A click needs the line's bounding box, which is wrong the
  * moment the editor scrolls or the side bar resizes; a line number is a line number.
  */
-async function placeCursor(workbench, needle) {
-	const lines = await editorLines(workbench);
-	const index = lines.findIndex(line => line.includes(needle));
+async function placeCursor(workbench, needle, { timeoutSeconds = 15 } = {}) {
+	// Retried, because a layout change - opening the AI panel, closing a diff - re-renders the
+	// viewport, and a look taken mid-render sees no lines at all.
+	let lines = [];
+	let index = -1;
+	for (let i = 0; i < timeoutSeconds; i++) {
+		lines = await editorLines(workbench);
+		index = lines.findIndex(line => line.includes(needle));
+		if (index !== -1) { break; }
+		await sleep(1000);
+	}
 	if (index === -1) {
 		throw new Error(`no editor line contains ${JSON.stringify(needle)} (saw ${lines.length} lines)`);
 	}
@@ -284,11 +339,21 @@ function diffIsOpen(workbench) {
  * Covers editor-title actions and notification buttons in one helper, because Accept and Discard
  * appear in both places.
  */
+/*
+ * Notification buttons are searched first, deliberately.
+ *
+ * A click on an editor-title action does not dispatch its command from here - proven, not guessed:
+ * with logging on every path of acceptPendingEdit, clicking "PSCode: Accept AI Change" in the title
+ * bar produced no log line at all, so the command never ran. The same click on the notification's
+ * Accept works. Ordering the notification first means these helpers exercise a button that fires.
+ *
+ * (This note lives out here because a backtick inside an evaluated template literal ends it.)
+ */
 async function clickControl(workbench, pattern) {
 	const found = await workbench.eval(`
 		const re = new RegExp(${JSON.stringify(pattern)}, 'i');
 		const controls = Array.from(document.querySelectorAll(
-			'a.action-label, .monaco-button, .monaco-text-button, .notification-toast a, li.action-item a'
+			'.notification-toast a, .notification-toast .monaco-button, .monaco-text-button, .monaco-button, a.action-label, li.action-item a'
 		));
 		const hit = controls.find(el => {
 			const label = ((el.textContent || '') + ' ' + (el.title || '') + ' '
@@ -328,8 +393,9 @@ async function waitForControl(workbench, pattern, { seconds = 300 } = {}) {
 	for (let i = 0; i < seconds; i++) {
 		const found = await workbench.eval(`
 			const re = new RegExp(${JSON.stringify(pattern)}, 'i');
+			// Same ordering as clickControl: the notification's button is the one that fires.
 			const controls = Array.from(document.querySelectorAll(
-				'a.action-label, .monaco-button, .monaco-text-button, .notification-toast a, li.action-item a'
+				'.notification-toast a, .notification-toast .monaco-button, .monaco-text-button, .monaco-button, a.action-label, li.action-item a'
 			));
 			const hit = controls.find(el => re.test(
 				((el.textContent || '') + ' ' + (el.title || '') + ' ' + (el.getAttribute('aria-label') || ''))
@@ -386,6 +452,6 @@ async function openPanel(port, workbench, seconds = 40) {
 module.exports = {
 	listTargets, Session, attachWorkbench, attachPanel, runCommand, openPanel, sleep,
 	// workbench driving
-	editorLines, openFile, placeCursor, selectLines, toasts, diffIsOpen, clickControl, waitFor,
+	ensureFocus, editorLines, openFile, placeCursor, selectLines, toasts, diffIsOpen, clickControl, waitFor,
 	waitForControl, isWorking,
 };
