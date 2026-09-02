@@ -83,6 +83,18 @@ export async function runAgent(options: AgentRunOptions): Promise<ChatMessage[]>
 		}
 		events.onIteration(iteration, maxIterations);
 
+		/*
+		 * Logged per step, because on CPU a step is minutes and the log was the only place a user
+		 * could look - and it said nothing until something went wrong. A run that is thinking and a
+		 * run that is wedged looked identical in the log for ten minutes at a stretch, which is the
+		 * same confusion the activity strip exists to remove from the UI. The prompt size is
+		 * included because it is what makes the step slow: the 11 tool definitions alone are ~2,000
+		 * tokens before any of the conversation.
+		 */
+		const promptChars = messages.reduce((total, message) => total + message.content.length, 0);
+		const stepStarted = Date.now();
+		log.info(`[agent] step ${iteration}/${maxIterations} - asking the model (~${promptChars} prompt chars)`);
+
 		let text = '';
 		const toolCalls: ToolCall[] = [];
 
@@ -118,6 +130,13 @@ export async function runAgent(options: AgentRunOptions): Promise<ChatMessage[]>
 		produced.push(assistantMessage);
 
 		// No tools requested means the model considers the task finished.
+		const stepSeconds = ((Date.now() - stepStarted) / 1000).toFixed(1);
+		log.info(
+			`[agent] step ${iteration} replied in ${stepSeconds}s: `
+			+ `${text.length} chars, ${toolCalls.length} tool call(s)`
+			+ (toolCalls.length ? ` (${toolCalls.map(call => call.name).join(', ')})` : '')
+		);
+
 		if (toolCalls.length === 0) {
 			events.onDone('stop');
 			return produced;
